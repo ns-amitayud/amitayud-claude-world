@@ -52,6 +52,54 @@ After fetching the diff, resolve all cited line numbers to actual file line numb
 
 ---
 
+## Pre-review context (PR URL only)
+
+Before reviewing, check whether a saved background analysis of the pre-PR design exists.
+
+### Step 1 — Check for saved context
+
+```
+ls ~/.claude/review-context/<owner>-<repo>-<pr-number>.md
+```
+
+- If the file **exists**: ask the reviewer: *"Background analysis found for PR \<number\>. Load it? (Y/N)"*. If Y, read and present it before proceeding to the review.
+- If the file **does not exist**: ask the reviewer: *"No background analysis found. Generate one? This traces the pre-PR dataflow in the changed files to show which gaps the PR addresses. (Y/N)"*.
+
+### Step 2 — Generate (if requested)
+
+1. Get the list of changed files from the diff already fetched.
+2. Get the PR base SHA:
+   ```
+   gh api repos/<owner>/<repo>/pulls/<number> --jq '.base.sha'
+   ```
+3. For each changed file, read the **base branch** version at that SHA:
+   ```
+   gh api repos/<owner>/<repo>/contents/<filepath>?ref=<base-sha> \
+     --jq '.content' | base64 -d
+   ```
+4. Trace the relevant data/control flow in the changed areas:
+   - What data enters, how it flows, what decisions depend on it.
+   - Where the design has gaps or relies on untrusted inputs.
+5. Produce a structured document with these sections:
+   - **Overview**: one paragraph describing the pre-PR design
+   - **Stage-by-stage dataflow**: numbered stages with `file:line` citations
+   - **Identified gaps**: numbered list of specific problems in the pre-PR design
+   - **What the PR claims to address**: map PR description to the gaps above
+
+### Step 3 — Save automatically after generation
+
+```
+mkdir -p ~/.claude/review-context
+# write the document to:
+~/.claude/review-context/<owner>-<repo>-<pr-number>.md
+```
+
+Inform the reviewer: *"Background analysis saved to `~/.claude/review-context/<owner>-<repo>-<pr-number>.md` — will be loaded automatically on future reviews of this PR."*
+
+> Skip this entire section for branch name or file path reviews.
+
+---
+
 ## Language profile: C++ (`--lang cpp`)
 
 Apply this profile when `--lang cpp` is specified. Checks are cumulative across levels.
@@ -100,3 +148,32 @@ Operating principles (apply to both sub-skills):
 - Be precise about what needs to change and why. Cite specific lines and provide concrete alternatives.
 - Distinguish blocking concerns from suggestions. Not everything needs to gate a merge.
 - Respect the author's design intent; critique the implementation, not the approach, unless the approach is fundamentally flawed.
+
+## Output format
+
+```
+## Summary
+[One paragraph overview]
+
+## Issues
+### Critical
+- file:line — [Must fix before merge]
+
+### Minor
+- file:line — [Should fix, not blocking]
+
+### Suggestions
+- file:line — [Optional improvements]
+
+## Gap Coverage
+(Include only when background analysis was loaded or generated)
+
+| Gap (pre-PR design) | Addressed by PR? | Notes |
+|---------------------|-----------------|-------|
+| [gap from background analysis] | Yes / Partially / No | [which change covers it, or why not] |
+
+If the PR introduces new gaps or regressions relative to the pre-PR design, note them here.
+
+## Verdict
+APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
+```
