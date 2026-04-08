@@ -84,7 +84,8 @@ ls ~/.claude/review-context/<owner>-<repo>-<pr-number>.md
    - **Overview**: one paragraph describing the pre-PR design
    - **Stage-by-stage dataflow**: numbered stages with `file:line` citations
    - **Identified gaps**: numbered list of specific problems in the pre-PR design
-   - **What the PR claims to address**: map PR description to the gaps above
+   - **Design contracts this PR must fulfill**: explicit behavioral requirements from the HLD/spec that the PR is obligated to implement — independent of existing gaps. For each contract, state what correct behavior looks like so it can be verified during review. Include edge cases and failure modes (e.g. "DNS fails with fallback=no-dest-IP must suppress client IP, not silently fall through to it").
+   - **What the PR claims to address**: map PR description to the gaps and contracts above
 
 ### Step 3 — Save automatically after generation
 
