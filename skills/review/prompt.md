@@ -101,6 +101,36 @@ Inform the reviewer: *"Background analysis saved to `~/.claude/review-context/<o
 
 ---
 
+## General review checklist
+
+Apply these checks to every review, regardless of language or strictness level.
+
+### Parallel code path behavioral parity
+When a PR introduces a new code path that mirrors an existing one (e.g., a new
+layer doing what a prior layer already does), enumerate the behavioral contracts
+of the existing path: feature flags that govern its behavior, error-handling
+modes, fallback behaviors, and edge cases. Verify each contract is either
+present in the new path or explicitly excluded with justification.
+
+Flag as **Critical** if a behavior-governing flag present in the existing path
+is silently absent from the new path — the two paths will behave inconsistently
+at runtime.
+
+### Config flag duplication
+If the PR introduces a new config flag, check whether a semantically equivalent
+flag already exists in a related or neighboring component. Duplicated config
+creates operator burden (two flags must be kept in sync) and a new class of
+inconsistency bug. Flag as **Minor** with a question about whether the existing
+flag can be reused instead.
+
+### Boolean flag test coverage
+For every new boolean config flag or feature flag introduced, verify that tests
+cover both the enabled and disabled states. The disabled (default-off) state is
+the code path running for all existing deployments and is the most likely to be
+undertested. Flag as **Minor** if only one state is exercised.
+
+---
+
 ## Language profile: C++ (`--lang cpp`)
 
 Apply this profile when `--lang cpp` is specified. Checks are cumulative across levels.
