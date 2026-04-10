@@ -129,6 +129,17 @@ cover both the enabled and disabled states. The disabled (default-off) state is
 the code path running for all existing deployments and is the most likely to be
 undertested. Flag as **Minor** if only one state is exercised.
 
+### Multi-consumer function completeness
+When a PR modifies a function whose output is consumed by multiple callers or
+pipelines, verify that ALL consumers produce correct results — not just the
+primary one. A function can return the correct value for the caller under review
+while silently leaving a secondary pipeline (e.g. a lookup table, a cache, an
+event log field) unpopulated or stale.
+
+Flag as **Critical** if a secondary consumer produces incorrect results that
+affect policy, security, or auditing. Flag as **Minor** if the gap affects
+logging or non-critical output only.
+
 ---
 
 ## Language profile: C++ (`--lang cpp`)
