@@ -140,6 +140,42 @@ Flag as **Critical** if a secondary consumer produces incorrect results that
 affect policy, security, or auditing. Flag as **Minor** if the gap affects
 logging or non-critical output only.
 
+### Single source of truth violation
+When a PR introduces a new field or structure that tracks data an existing field
+already tracks, flag the ambiguity about which is authoritative. Two objects
+representing the same data force every consumer to answer "which one do I read?"
+— a question that will be answered inconsistently over time.
+
+Ask: why are both needed? Can the existing field be extended (e.g. with a new
+enum value or flag) rather than adding a parallel field? Flag as **Minor** if
+the duplication is cosmetic; flag as **Critical** if different consumers read
+from different sources and could diverge in behavior.
+
+### Stale data risk when elevating a mutable field to authoritative
+When a PR changes which field is the authoritative source for a consumer (e.g.
+"this function now reads from X instead of Y"), audit every place X is mutated
+to verify it stays current for that consumer's use case. A field that is correct
+at one point in the connection lifecycle may become stale at another — for
+example, if a later processing stage updates a domain but the IP stored alongside
+it is not refreshed.
+
+Flag as **Critical** if staleness could cause a policy decision to evaluate
+against wrong data. Flag as **Minor** if the staleness affects logging only.
+Note pre-existing staleness bugs that the PR makes newly relevant.
+
+### Base class pollution — prefer virtual dispatch
+When a PR adds state, methods, or logic to a base class that is only relevant to
+one subclass, flag it and suggest moving the new behavior to that subclass via a
+virtual method. Base classes should not carry logic that the majority of their
+subclasses never use.
+
+Pattern to suggest: introduce a virtual hook in the base class with a no-op
+default (e.g. `virtual ns_nbres_t prePolicyTasks() { return NS_NBOK; }`), and
+override it only in the subclass that needs the behavior. This keeps the base
+class clean and prevents unintended coupling in other subclasses.
+
+Flag as **Minor** (design concern, not a correctness issue).
+
 ---
 
 ## Language profile: C++ (`--lang cpp`)
