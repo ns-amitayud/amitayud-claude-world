@@ -110,6 +110,92 @@ New hires and engineers switching between components can read the architecture d
 
 ---
 
+---
+
+## Confluence BFS Crawl Plan
+
+### Motivation
+
+`nsproxy-pod-lifecycle.md` was generated entirely from the codebase and ENG-978048 log observations. Confluence pages were not a source (403 at time of generation). The crawl is intended to:
+- Corroborate or contradict what's in the codebase
+- Fill in sections of `nsproxy-pod-lifecycle.md` currently marked for engineer review
+- Identify gaps that warrant new architecture documents (e.g., `nsproxy-etcd-schema.md`, `nsproxy-healthcheck.md`)
+
+### Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Start URL | `https://netskope.atlassian.net/wiki/spaces/DP/pages/3407972646` (New Hire Guide — Data Path) |
+| Max depth | 2 |
+| Scope filter | `spaces/DP/` and `spaces/DAP/` only |
+| Relevance keywords | `nsproxy`, `iproxy`, `adapter`, `pod`, `lightning`, `CFW`, `halbagent`, `watchdog`, `etcd`, `VPP`, `dppool`, `healthcheck`, `lifecycle` |
+| Output | Ranked list of relevant pages with title + one-line summary |
+
+### Algorithm
+
+```
+Queue  = [(root_page_id, depth=0)]
+Visited = {}
+
+while Queue not empty:
+    (page_id, depth) = dequeue
+    if page_id in Visited: continue
+    Visited.add(page_id)
+
+    page = fetch(page_id)           # GET /rest/api/content/{id}?expand=body.storage
+    links = extract_ri_page_links(page.body.storage)   # parse <ri:page> tags
+    score = relevance_score(page, keywords)
+
+    if score > 0:
+        Relevant.append((page, score, depth))
+
+    if depth < max_depth:
+        for linked_id not in Visited:
+            enqueue (linked_id, depth+1)
+
+sort Relevant by score descending
+output ranked list
+```
+
+### Link Extraction
+
+Confluence storage format uses `<ri:page>` tags for internal links:
+```xml
+<ac:link><ri:page ri:content-title="Some Page" ri:space-key="DP"/></ac:link>
+```
+These are parsed from `body.storage` and resolved to page IDs via:
+```
+GET /rest/api/content?spaceKey=DP&title=Some+Page
+```
+
+### Tooling
+
+Uses the `confluence` CLI already available at:
+```
+~/.claude/plugins/cache/netskope/eng-skills/1.6.2/skills/confluence/scripts/confluence
+```
+
+### Output Format
+
+Each relevant page entry:
+```
+[depth=N] Page Title
+  URL: https://netskope.atlassian.net/wiki/spaces/DP/pages/{id}/...
+  Score: N keywords matched
+  Summary: one-line description of content
+  Relevant to: nsproxy-pod-lifecycle.md §3 (Startup Sequence)
+```
+
+### Status
+
+- [ ] Implement BFS crawler script
+- [ ] Run crawl from New Hire Guide root
+- [ ] Review ranked output
+- [ ] Update `nsproxy-pod-lifecycle.md` with Confluence-sourced corrections
+- [ ] Identify new documents to create
+
+---
+
 ## Related
 
 - ENG-978048 — the investigation that prompted this discussion
