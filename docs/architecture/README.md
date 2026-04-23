@@ -170,27 +170,37 @@ GET /rest/api/content?spaceKey=DP&title=Some+Page
 
 ### Tooling
 
-Uses the `confluence` CLI already available at:
+The crawler is implemented at `scripts/confluence-bfs-crawler.py`.
+
+```bash
+cd ~/amitayud-claude-world
+python3 scripts/confluence-bfs-crawler.py                        # default settings
+python3 scripts/confluence-bfs-crawler.py --depth 1             # shallower crawl
+python3 scripts/confluence-bfs-crawler.py --output /tmp/out.md  # custom output path
 ```
-~/.claude/plugins/cache/netskope/eng-skills/1.6.2/skills/confluence/scripts/confluence
-```
+
+Requires env vars: `ATLASSIAN_API_TOKEN`, `ATLASSIAN_EMAIL`, `ATLASSIAN_SITE`.
+
+Output is written to `docs/architecture/confluence-bfs-results.md` (runtime-generated, not committed).
 
 ### Output Format
 
-Each relevant page entry:
-```
-[depth=N] Page Title
-  URL: https://netskope.atlassian.net/wiki/spaces/DP/pages/{id}/...
-  Score: N keywords matched
-  Summary: one-line description of content
-  Relevant to: nsproxy-pod-lifecycle.md §3 (Startup Sequence)
+Each relevant page entry in the markdown report:
+
+```markdown
+## [Page Title](https://netskope.atlassian.net/wiki/...)
+
+- **Space:** DP
+- **Depth:** 1
+- **Score:** 4
+- **Matched keywords:** etcd, lifecycle, nsproxy, pod
 ```
 
 ### Status
 
-- [ ] Implement BFS crawler script
-- [ ] Run crawl from New Hire Guide root
-- [ ] Review ranked output
+- [x] Implement BFS crawler script (`scripts/confluence-bfs-crawler.py`)
+- [x] Run crawl from New Hire Guide root (31 pages fetched, 20 relevant — 2026-04-23)
+- [ ] Review ranked output and annotate with relevance to architecture docs
 - [ ] Update `nsproxy-pod-lifecycle.md` with Confluence-sourced corrections
 - [ ] Identify new documents to create
 
