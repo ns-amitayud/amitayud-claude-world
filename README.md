@@ -7,6 +7,7 @@ Shared Claude Code skills for code review within the netSkope GitHub organizatio
 - `/review` — Full PR review with language profiles, strictness levels, accurate line numbers, pre-review background analysis, and gap coverage output.
 - `/review-pr` — Performs an initial review of a PR.
 - `/pr-reply-ad-hoc` — Fetches existing review comments on a PR and drafts responses for you to copy-paste.
+- `/review-feature-flag-cm [CM-KEY]` — Reviews feature-flag automation CMs from Jira. No argument = full pending-review queue; with a CM key = single ticket review.
 
 ## Setup
 
@@ -22,6 +23,7 @@ git clone git@github.com:ns-amitayud/amitayud-claude-world.git ~/amitayud-claude
 ln -s ~/amitayud-claude-world/skills/review ~/.claude/skills/review
 ln -s ~/amitayud-claude-world/skills/review-pr ~/.claude/skills/review-pr
 ln -s ~/amitayud-claude-world/skills/pr-reply-ad-hoc ~/.claude/skills/pr-reply-ad-hoc
+ln -s ~/amitayud-claude-world/skills/review-feature-flag-cm ~/.claude/skills/review-feature-flag-cm
 ```
 
 ### Usage
