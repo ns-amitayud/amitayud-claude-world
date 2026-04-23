@@ -1,7 +1,7 @@
 # NSProxy Pod Lifecycle
 
-> **Status:** First version — generated 2026-04-20 from ENG-978048 investigation.
-> **Reviewer:** Engineer review required — see appendix for sections needing validation.
+> **Status:** Updated 2026-04-23 — §4, §5, §7, §8 corroborated/updated from CF space design doc (NPLAN-5483 CFW Failover). §10 still under investigation.
+> **Reviewer:** Engineer review required for §10 (double restart root cause) and §8 (169.254.11.2 exact CFW role).
 > **Update trigger:** After pod lifecycle bugs, CFW version upgrades, or adapter component changes.
 
 ---
@@ -152,23 +152,52 @@ etcd entries have **no TTL**. They persist indefinitely until explicitly deleted
 
 ## 5. Healthcheck Flow
 
-**Source:** `proxynshadapter_supervisor.conf` lines 118-141 (nsproxyadapterpodagent config)
+**Sources:** `proxynshadapter_supervisor.conf` lines 118-141 (nsproxyadapterpodagent config); [NPLAN-5483 CFW Failover Design](https://netskope.atlassian.net/wiki/spaces/CF/pages/5085528065)
 
-The healthcheck service (external to this repo — part of the CFW/Lightning platform) reads pod status from:
+### 5.1 CFW Healthcheck Architecture
+
+The healthcheck flow involves two distinct layers:
+
+**Layer 1 — Pod-level (nsproxyadapterpodagent → etcd):**
+`nsproxyadapterpodagent` controls the pod's own status, writing to:
 ```
 /cfw/svc/iproxy-default/pods/{pod_id}/podstatus/
 ```
-
-A pod is marked "down" when:
-- Its `podstatus` entry shows `"status": "down"`, OR
-- Its etcd entry exists but the node is unreachable (no heartbeat renewal)
-
-`nsproxyadapterpodagent` controls the pod's own status with these parameters:
+Parameters controlling self-reporting:
 ```
 HEALTHCHECK_MAX_FAILURE_COUNT="12"
 HEALTHCHECK_PROBE_INTERVAL="5"
 ```
 Meaning: 12 consecutive failures × 5 second interval = **60 seconds** before a pod marks itself "down".
+
+**Layer 2 — Service-level (healthchecksvc → etcd → NSHGW):**
+`healthchecksvc` (CFW platform component) monitors each pod every **10 seconds** using multiple methods: Pod check, interface check, etc. It marks pod status UP/DOWN in etcd. When **all pods of a service are down**, that service is marked down in etcd. NSHGW reads this from etcd and responds to HC probe queries from gateways and GSLB.
+
+```
+nsproxyadapterpodagent → etcd /cfw/svc/.../podstatus/
+                              ↑ (pod self-reports)
+
+healthchecksvc ← polls etcd every 10s
+healthchecksvc → marks service UP/DOWN in etcd
+NSHGW ← reads service status from etcd → responds to HC probes from NSGW/GSLB
+```
+
+### 5.2 CFW HCv3 API
+
+NSHGW exposes a v3 healthcheck API for gateways:
+- **Port 8999** — NPE clusters
+- **Port 7999** — prod clusters
+
+Feature key names come from `/opt/ns/tenant/{tenant_id}/feature_config.json`. The NSProxy service appears as:
+- `iproxy-normal` (normal tenant pool)
+- `iproxy-debug` (debug pool)
+- `iproxy-staggered` (staggered pool)
+
+**Note:** `iproxy-normal/debug/staggered` status is **not included** in the NSGW-facing response (only aggregate feature status is reported to NSGW). Response: `200 OK` = healthy; anything else = HC failure → gateway failover.
+
+Failopen services (IPS, DLP) are not reported — they always return 200 OK and bypass silently when down.
+
+### 5.3 Pod Liveness (from adapter side)
 
 The liveness check mechanism (`liveness_check` script):
 ```bash
@@ -225,7 +254,7 @@ Key watchdog actions on entering error state (`adapter_watchdog.py:419`):
 
 ## 7. LB Hash Reconciliation (halbagent)
 
-**Source:** `proxynshadapter_supervisor.conf` line 147 (`HALB_RECONCILE_TIME_PERIOD="20"`), ENG-978048 halbagent logs
+**Sources:** `proxynshadapter_supervisor.conf` line 147 (`HALB_RECONCILE_TIME_PERIOD="20"`), ENG-978048 halbagent logs; [NPLAN-5483 CFW Failover Design](https://netskope.atlassian.net/wiki/spaces/CF/pages/5085528065)
 
 `nshalbagent` runs a reconciliation loop every **20 seconds** that:
 1. Reads LB hash entries from etcd (`/cfw/service/lb-hash/`)
@@ -242,6 +271,14 @@ vpp-connector thread: "Delete arp entries. list: [{'ip': 169.254.11.2, 'mac': ..
 The `lbhash-updater` thread makes gRPC calls to VPP. If these calls exceed the gRPC deadline (observed: `Deadline Exceeded` after sustained non-convergence), the thread dies, halbagent main thread detects it and exits, and the watchdog restarts the adapter group.
 
 **Known issue (ENG-978048):** The convergence loop has no escape hatch — it retries forever without backoff. In large clusters (~40 pods), sustained non-convergence can eventually exhaust the gRPC deadline. See Section 10.
+
+### 7.1 halbagent Role in Service Chain Failover (CFW context)
+
+Per NPLAN-5483 design doc, when `healthchecksvc` marks all pods of a service (e.g., all `iproxy-normal` pods) as down in etcd, the CFW platform needs to alter the service chain. The agreed solution (Solution 3b) is:
+
+> `nshgwpodagent` reads the etcd status updated by `healthchecksvc`. When all pods of a failopen service go down, `nshgwpodagent` calls the VPP API to set a flag indicating service down and programs the list of down service IDs. VPP then excludes that service from the tenant service chain.
+
+halbagent's role is as an indicator: when `halb indicates that pods/services are down` (per the design doc), the service chain LB logic is altered. This confirms that halbagent is not just reconciling ARP entries in isolation — it is part of the broader mechanism by which VPP learns about pod availability changes.
 
 ---
 
@@ -261,6 +298,12 @@ For TAP mode, `generate_interface_conf.py` reads the interface IP/mask/MAC from 
 For SR-IOV, `proxynshadapter_cleanup.sh` detects PCI addresses from `/etc/udev/rules.d/` and binds VFs to `vfio-pci` (Intel) or leaves them bound to Mellanox drivers.
 
 **`169.254.11.2` significance:** This is the `adaptereth0` interface IP — a link-local address used for internal pod-to-pod communication in the service chain. It appears in ARP entries that halbagent manages.
+
+Per NPLAN-5483, the service chain for a typical web-traffic tenant is:
+```
+NSHGW → SocksProxy → NSProxy (iproxy-normal) → Appfwl → IPS → Nat
+```
+The `adaptereth0` link-local address (`169.254.11.2`) is the interface through which pods in adjacent service chain positions communicate. halbagent's ARP management ensures VPP can route packets between pods via this address.
 
 ---
 
@@ -373,13 +416,18 @@ This document was generated from the ENG-978048 investigation using the followin
 - `adapterwatchdog` source (`adapter_watchdog.py`, `adapter_watchdog_state.py`) — in a separate Python repo
 - `nsproxyadapterpodagent` source — in a separate Python repo
 
+**Sources added 2026-04-23 (from Confluence BFS crawl):**
+- [NPLAN-5483 Design Document for Cloud Firewall Failover mechanism](https://netskope.atlassian.net/wiki/spaces/CF/pages/5085528065) — CFW space; covers healthchecksvc architecture, HC API v3, service chain structure, halbagent/podagent role in failover
+- [Design Spec - NSGW Healthcheck](https://netskope.atlassian.net/wiki/spaces/ENG/pages/4505764110) — NSProxy HC as seen by NSGW
+- [Design Spec - Healthcheckd](https://netskope.atlassian.net/wiki/spaces/ENG/pages/172234728) — generic healthcheck daemon architecture
+
 ### Sections Requiring Engineer Review
 
-- [ ] **Section 4 (etcd schema)** — key paths inferred from log observations; verify against live cluster or podagent source
-- [ ] **Section 5 (healthcheck flow)** — healthcheck service behavior inferred; verify with CFW/Lightning team
-- [ ] **Section 7 (LB hash reconciliation)** — based on log observations only; verify against `halbagent_lb_watch.py` source
-- [ ] **Section 8 (interface setup)** — `169.254.11.2` significance needs confirmation from CFW team
-- [ ] **Section 10 (failure modes)** — double restart root cause under investigation
+- [x] **Section 4 (etcd schema)** — key paths corroborated by NPLAN-5483: healthchecksvc writes pod status to etcd; NSHGW/nshgwpodagent reads from etcd. Inferred key paths from ENG-978048 logs remain plausible.
+- [x] **Section 5 (healthcheck flow)** — confirmed by NPLAN-5483: healthchecksvc polls every 10s, marks service down when all pods down, NSHGW exposes HCv3 API on port 8999 (NPE)/7999 (prod). iproxy-normal/debug/staggered excluded from NSGW HC response.
+- [x] **Section 7 (LB hash reconciliation)** — halbagent role in service chain failover confirmed by NPLAN-5483 Solution 3b: nshgwpodagent reads etcd status and calls VPP API to alter service chain.
+- [ ] **Section 8 (interface setup)** — `169.254.11.2` role in service chain context added from NPLAN-5483; exact CFW-side ARP management still needs confirmation from CFW team.
+- [ ] **Section 10 (failure modes)** — double restart root cause still under investigation; not covered by any Confluence page found.
 
 ### How to Update This Document
 
