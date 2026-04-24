@@ -151,6 +151,28 @@ enum value or flag) rather than adding a parallel field? Flag as **Minor** if
 the duplication is cosmetic; flag as **Critical** if different consumers read
 from different sources and could diverge in behavior.
 
+### Provenance and source-field completeness
+When a PR introduces or modifies a struct or object that carries both a **value**
+field and a **source/provenance** field (e.g. an IP address alongside an
+`IpSource` enum, or a domain name alongside a `Source` enum), verify that **both**
+fields are set correctly at every write site — not just the value field.
+
+Source fields are easy to miss because they look like metadata, but they are
+frequently the primary control for downstream decisions (policy evaluation,
+routing, logging). A correct value with a wrong source causes the consumer to
+misclassify what it received.
+
+For every function that writes a value field, ask:
+- Is the corresponding source/provenance field also updated?
+- Is the source value semantically correct for *this* write site (e.g. if the
+  value came from a CONNECT header, is the source tagged as CONNECT, not SNI)?
+- Do all branches of conditional write paths set the source correctly, including
+  the else/fallback branch?
+
+Flag as **Critical** if a wrong source field causes a policy decision or security
+control to evaluate against mislabelled data. Flag as **Minor** if the impact is
+limited to logging or diagnostics.
+
 ### Stale data risk when elevating a mutable field to authoritative
 When a PR changes which field is the authoritative source for a consumer (e.g.
 "this function now reads from X instead of Y"), audit every place X is mutated
