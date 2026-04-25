@@ -8,6 +8,7 @@ Shared Claude Code skills for code review within the netSkope GitHub organizatio
 - `/review-pr` — Performs an initial review of a PR.
 - `/pr-reply-ad-hoc` — Fetches existing review comments on a PR and drafts responses for you to copy-paste.
 - `/review-feature-flag-cm [CM-KEY]` — Reviews feature-flag automation CMs from Jira. No argument = full pending-review queue; with a CM key = single ticket review.
+- `/research-architecture <component>` — Produces a codebase-corroborated architecture doc in `docs/architecture/` by combining source code reading with Confluence BFS crawl results. Run before `capture-design-context` when starting feature work on an NSProxy/dataplane component.
 
 ## Setup
 
@@ -24,6 +25,7 @@ ln -s ~/amitayud-claude-world/skills/review ~/.claude/skills/review
 ln -s ~/amitayud-claude-world/skills/review-pr ~/.claude/skills/review-pr
 ln -s ~/amitayud-claude-world/skills/pr-reply-ad-hoc ~/.claude/skills/pr-reply-ad-hoc
 ln -s ~/amitayud-claude-world/skills/review-feature-flag-cm ~/.claude/skills/review-feature-flag-cm
+ln -s ~/amitayud-claude-world/skills/research-architecture ~/.claude/skills/research-architecture
 ```
 
 ### Usage
