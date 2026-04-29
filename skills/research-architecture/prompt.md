@@ -30,6 +30,30 @@ If stale or has open review items, proceed to update it.
 
 ---
 
+## Step 1.5: Check for design specs
+
+```bash
+ls ~/amitayud-claude-world/docs/superpowers/specs/
+```
+
+Look for any spec files related to this component or EPIC (filename contains the Jira ID
+or component name). If found, read them before touching any source code. Spec files are
+pre-computed, codebase-corroborated references — reading one is faster and more accurate
+than re-deriving from source.
+
+From each relevant spec file, extract:
+- **Implementation Breakdown** — which PRs delivered which contracts; use this to populate
+  §7 (Feature Delivery Status) in the output doc without re-reading git history.
+- **Known Gaps and Deferred Work** — what is explicitly not addressed; use this to populate
+  §7 and to generate Diagram 4 (see Step 4).
+- **Execution Stages Affected** — use this to populate or update §2/§3 in the output doc.
+- **Design Contracts** — use these as the ground truth for "what was the feature supposed
+  to do" when assessing correctness of the current implementation.
+
+If no spec file exists for this component, skip this step and derive everything from source.
+
+---
+
 ## Step 2: Run the Confluence BFS crawl
 
 ```bash
@@ -107,11 +131,29 @@ Table: Failure | Symptom | Root Cause | Resolution
 ## 6. Sharp Edges
 Numbered list of non-obvious behaviors that cause bugs.
 
+## 7. Feature Delivery Status (omit if no spec file exists)
+Populated from the spec file found in Step 1.5. Do not derive from source.
+
+  **EPIC:** <jira-id and title>
+
+  **Delivered (by PR):**
+  - PR #NNNNN: <what contracts it implemented, one line>
+  - PR #NNNNN: <what contracts it implemented, one line>
+
+  **Pending:**
+  - <gap 1 from Known Gaps section of spec>
+  - <gap 2 from Known Gaps section of spec>
+
+  Include Diagram 4 here as a Mermaid flowchart showing outstanding work,
+  derived from the spec's Known Gaps section. Follow the same node style
+  used in the spec's Diagrams section.
+
 ## Quick Reference: Useful Commands
 Bash commands for live inspection on a dppool node or via kubectl.
 
 ## Appendix: Sources and Review Status
 - Sources used (codebase files, Confluence pages with URLs)
+- Spec files read (paths from Step 1.5, if any)
 - Sections requiring engineer review (checkboxes)
 ```
 
@@ -133,8 +175,12 @@ git push origin master
 
 ## Relationship to Other Skills
 
-- **capture-design-context**: Runs AFTER this skill. Reads the architecture doc produced
-  here to populate §3 (Execution Stages Affected) and §8 (Known Gaps) without re-deriving
-  from source.
+- **capture-design-context** (in `amitayud-claude`): Runs AFTER this skill. Reads the
+  architecture doc produced here to populate §3 (Execution Stages Affected) and §8
+  (Known Gaps) without re-deriving from source. Also produces the spec files that this
+  skill reads in Step 1.5.
+- **raise-pr** (in `amitayud-claude`): Produces Diagrams 2 and 3 per PR from the spec
+  file. This skill produces Diagram 4 (outstanding work) in §7, refreshed each time
+  the architecture doc is updated after a PR lands.
 - **`scripts/confluence-bfs-crawler.py`**: The BFS crawl script this skill uses. Parameters
   and space coverage documented in `docs/architecture/README.md`.
