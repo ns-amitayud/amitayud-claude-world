@@ -126,20 +126,17 @@ with a lower-trust value. Stage 2 reads Stage 0 or Stage 1 result. Stage 3 skips
    `populateBackGeoInfo()` atomically.
 4. `get_dstip()` never reads `isSslLayerDnsResolutionEnabled()` — it is driven solely
    by `IpSource`.
-5. `get_dstip()` returns the service-resolved IP via the caller-provided buffer when buf
-   is non-null, or via `c_str()` directly when buf is null (safe under single-threaded
-   event-loop guarantee).
-6. When `ipSource == DnsAttemptedAndFailed` and `isDnsErrorSuppressClientIp()` is false,
+5. When `ipSource == DnsAttemptedAndFailed` and `isDnsErrorSuppressClientIp()` is false,
    `get_dstip()` falls through to return the client IP from InlineConnInfo.
-7. When `ipSource == DnsAttemptedAndFailed` and `isDnsErrorSuppressClientIp()` is true,
+6. When `ipSource == DnsAttemptedAndFailed` and `isDnsErrorSuppressClientIp()` is true,
    `get_dstip()` returns nullptr.
-8. The `m_dnsErrorSuppressClientIp` flag is evaluated once at DNS-failure time by
+7. The `m_dnsErrorSuppressClientIp` flag is evaluated once at DNS-failure time by
    `dnsLookupFailureHandler()` against both global and per-tenant `defer-dns-error` config.
    It is not re-evaluated at `get_dstip()` time.
-9. In `handleNoSniScenario()`, the `source` argument to every `setSslSni()` call correctly
+8. In `handleNoSniScenario()`, the `source` argument to every `setSslSni()` call correctly
    identifies the origin of the value being stored. Verified by audit — all branches correct.
-10. `SslLayerDnsResolutionFailure` test assertion is consistent with its comment: `SSL_connect`
-    returns 1 (success); DNS failure is detected at AppModule layer, not during TLS handshake.
+9. `SslLayerDnsResolutionFailure` test assertion is consistent with its comment: `SSL_connect`
+   returns 1 (success); DNS failure is detected at AppModule layer, not during TLS handshake.
 
 ---
 
