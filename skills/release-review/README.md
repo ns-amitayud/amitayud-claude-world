@@ -33,12 +33,13 @@ For each NSProxy ticket in a release CSV that still has unanswered release-readi
 ## Usage
 
 ```
-/release-review <path-to-csv>
+/release-review [--limit N] <path-to-csv>
 ```
 
-Example:
+Examples:
 ```
-/release-review ~/R138.csv
+/release-review ~/R138.csv              # process all unanswered tickets
+/release-review --limit 5 ~/R138.csv   # process only the first 5 (demo mode)
 ```
 
 Output file: `~/R138-reviewed.xlsx` (same directory, `-reviewed.xlsx` suffix).

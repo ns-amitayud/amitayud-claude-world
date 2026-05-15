@@ -69,12 +69,14 @@ def is_release_ready(row, min_resolved=DEFAULT_MIN_RESOLVED):
         return False
 
 
-def cmd_filter(csv_path, min_resolved=DEFAULT_MIN_RESOLVED):
+def cmd_filter(csv_path, min_resolved=DEFAULT_MIN_RESOLVED, limit=None):
     rows = load_csv(csv_path)
     results = []
     for row in rows[1:]:   # skip header
         if is_nsproxy_row(row) and is_release_ready(row, min_resolved) and needs_answers(row):
             results.append(row[KEY_COL])
+            if limit and len(results) >= limit:
+                break
     print('\n'.join(results))
 
 
@@ -116,12 +118,15 @@ if __name__ == '__main__':
     cmd = sys.argv[1]
     path = sys.argv[2]
     if cmd == 'filter':
-        # Optional: --since=YYYY-MM-DD to override minimum resolved date
+        # Optional: --since=YYYY-MM-DD, --limit=N
         min_resolved = DEFAULT_MIN_RESOLVED
+        limit = None
         for arg in sys.argv[3:]:
             if arg.startswith('--since='):
                 min_resolved = datetime.strptime(arg.split('=', 1)[1], '%Y-%m-%d')
-        cmd_filter(path, min_resolved)
+            elif arg.startswith('--limit='):
+                limit = int(arg.split('=', 1)[1])
+        cmd_filter(path, min_resolved, limit)
     elif cmd == 'write':
         # args: review.py write <csv> <key> <q1> .. <q8>
         if len(sys.argv) != 12:

@@ -1,8 +1,10 @@
 # release-review skill
 
-Use this skill when the user invokes `/release-review <csv_path>`.
+Use this skill when the user invokes `/release-review [--limit N] <csv_path>`.
 
 **Goal:** Draft release-readiness answers for NSProxy tickets in a release CSV, get human approval, write approved answers back into the CSV, and convert to XLSX ready for upload to the release tracking Google Sheet.
+
+**`--limit N`** (optional): process only the first N unanswered tickets. Useful for demos or partial runs. Example: `/release-review --limit 5 ~/R138.csv`
 
 **Helper script:** `~/gitcode/amitayud-claude-world/skills/release-review/scripts/review.py`
 
@@ -34,8 +36,9 @@ Before doing anything else:
 
 4. Get the list of tickets to process:
    ```bash
-   python3 ~/gitcode/amitayud-claude-world/skills/release-review/scripts/review.py filter <csv_path>
+   python3 ~/gitcode/amitayud-claude-world/skills/release-review/scripts/review.py filter <csv_path> [--limit=N]
    ```
+   If the user passed `--limit N`, append `--limit=N` to the command above.
    Report: "Found K NSProxy tickets needing answers (resolved since 2026-01-01). To change the cutoff, re-run with --since=YYYY-MM-DD."
 
 ---
