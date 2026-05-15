@@ -17,7 +17,13 @@ import re
 
 COMPONENT_COL = 10   # Components
 KEY_COL = 1
+STATUS_COL = 3       # Status
+RESOLUTION_COL = 19  # Resolution
 ANSWER_COLS = list(range(23, 31))   # cols 23-30 inclusive (Q1-Q8)
+
+# Only process tickets that are done — exclude In Progress, Reopened, Open
+VALID_STATUSES = {'closed', 'resolved', 'pending close'}
+VALID_RESOLUTIONS = {'fixed', 'done'}
 
 
 def load_csv(path):
@@ -40,11 +46,18 @@ def needs_answers(row):
     return False
 
 
+def is_release_ready(row):
+    """True if ticket is done (closed/resolved/pending close with a fixed resolution)."""
+    status = row[STATUS_COL].strip().lower() if len(row) > STATUS_COL else ''
+    resolution = row[RESOLUTION_COL].strip().lower() if len(row) > RESOLUTION_COL else ''
+    return status in VALID_STATUSES and resolution in VALID_RESOLUTIONS
+
+
 def cmd_filter(csv_path):
     rows = load_csv(csv_path)
     results = []
     for row in rows[1:]:   # skip header
-        if is_nsproxy_row(row) and needs_answers(row):
+        if is_nsproxy_row(row) and is_release_ready(row) and needs_answers(row):
             results.append(row[KEY_COL])
     print('\n'.join(results))
 
