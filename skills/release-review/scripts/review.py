@@ -14,16 +14,23 @@ Usage:
 import sys
 import csv
 import re
+from datetime import datetime
 
 COMPONENT_COL = 10   # Components
 KEY_COL = 1
 STATUS_COL = 3       # Status
+RESOLVED_COL = 8     # Resolved date
 RESOLUTION_COL = 19  # Resolution
 ANSWER_COLS = list(range(23, 31))   # cols 23-30 inclusive (Q1-Q8)
 
 # Only process tickets that are done — exclude In Progress, Reopened, Open
 VALID_STATUSES = {'closed', 'resolved', 'pending close'}
 VALID_RESOLUTIONS = {'fixed', 'done'}
+
+# Minimum resolved date — tickets resolved before this are from prior releases
+# and should not be processed even if fix_versions includes this release.
+# Override via --since=YYYY-MM-DD on the command line.
+DEFAULT_MIN_RESOLVED = datetime(2026, 1, 1)
 
 
 def load_csv(path):
@@ -46,18 +53,27 @@ def needs_answers(row):
     return False
 
 
-def is_release_ready(row):
-    """True if ticket is done (closed/resolved/pending close with a fixed resolution)."""
+def is_release_ready(row, min_resolved=DEFAULT_MIN_RESOLVED):
+    """True if ticket is done and resolved after min_resolved date."""
     status = row[STATUS_COL].strip().lower() if len(row) > STATUS_COL else ''
     resolution = row[RESOLUTION_COL].strip().lower() if len(row) > RESOLUTION_COL else ''
-    return status in VALID_STATUSES and resolution in VALID_RESOLUTIONS
+    if status not in VALID_STATUSES or resolution not in VALID_RESOLUTIONS:
+        return False
+    resolved_str = row[RESOLVED_COL].strip() if len(row) > RESOLVED_COL else ''
+    if not resolved_str:
+        return False
+    try:
+        resolved = datetime.strptime(resolved_str, '%m/%d/%Y %H:%M:%S')
+        return resolved >= min_resolved
+    except ValueError:
+        return False
 
 
-def cmd_filter(csv_path):
+def cmd_filter(csv_path, min_resolved=DEFAULT_MIN_RESOLVED):
     rows = load_csv(csv_path)
     results = []
     for row in rows[1:]:   # skip header
-        if is_nsproxy_row(row) and is_release_ready(row) and needs_answers(row):
+        if is_nsproxy_row(row) and is_release_ready(row, min_resolved) and needs_answers(row):
             results.append(row[KEY_COL])
     print('\n'.join(results))
 
@@ -100,7 +116,12 @@ if __name__ == '__main__':
     cmd = sys.argv[1]
     path = sys.argv[2]
     if cmd == 'filter':
-        cmd_filter(path)
+        # Optional: --since=YYYY-MM-DD to override minimum resolved date
+        min_resolved = DEFAULT_MIN_RESOLVED
+        for arg in sys.argv[3:]:
+            if arg.startswith('--since='):
+                min_resolved = datetime.strptime(arg.split('=', 1)[1], '%Y-%m-%d')
+        cmd_filter(path, min_resolved)
     elif cmd == 'write':
         # args: review.py write <csv> <key> <q1> .. <q8>
         if len(sys.argv) != 12:
