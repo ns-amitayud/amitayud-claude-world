@@ -26,9 +26,9 @@ Before doing anything else:
    ```
    If this fails, run: `pip install pandas openpyxl`
 
-3. Confirm Jira CLI is available:
+3. Confirm Jira CLI is available and credentials are set:
    ```bash
-   ~/.claude/plugins/cache/netskope/eng-skills/1.6.2/skills/jira/scripts/jira issue ENG-974050 2>&1 | head -3
+   ~/.claude/plugins/cache/netskope/eng-skills/1.6.2/skills/jira/scripts/jira projects 2>&1 | head -3
    ```
    If 401 or error, warn: "Jira credentials may be missing. Answers based on Jira data will be limited."
 
