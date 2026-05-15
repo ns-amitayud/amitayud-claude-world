@@ -198,6 +198,8 @@ Extract any URL from the Jira description or PR body that points to Confluence o
 
 ## Phase 4: Approval loop
 
+**Important:** Complete Phase 3 analysis for ALL tickets before entering Phase 4. Do not show the approval UI ticket-by-ticket during analysis — hold all results until the full list is processed, then present them as described below.
+
 ### Low-risk batch
 
 After processing all tickets, collect the Low-risk ones. Present as a compact table:
