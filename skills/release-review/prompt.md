@@ -36,7 +36,7 @@ Before doing anything else:
    ```bash
    python3 ~/gitcode/amitayud-claude-world/skills/release-review/scripts/review.py filter <csv_path>
    ```
-   Report: "Found K NSProxy tickets needing answers."
+   Report: "Found K NSProxy tickets needing answers (resolved since 2026-01-01). To change the cutoff, re-run with --since=YYYY-MM-DD."
 
 ---
 
@@ -180,6 +180,9 @@ If Q4=YES, look in PR description or diff for the default value (enabled/disable
 
 **Q6 — Flag details:**
 If Q4=YES, note the flag name and type from PR description or diff. If not found: `[?]`
+
+**If Q4=YES and Q5 or Q6 are [?]:** Add a note in the per-ticket display:
+"⚠️ Flag detected but details not found in PR body. Recommend inspecting the .featurec or staged_config diff directly before approving Q5/Q6."
 
 **Q7 — IMF / rollback action:**
 Look for a rollback section in the PR description. If found: quote it. `[T1]`
