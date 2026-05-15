@@ -67,7 +67,7 @@ Optional additional criteria — select any to add:
 Press Enter for defaults (A+B active), or type letters to toggle (e.g. "CD"):
 ```
 
-**What to do:** Press Enter to accept defaults, or type any combination of A/B/C/D to change which optional criteria are active. For example, typing `CD` activates C and D instead of A and B.
+**What to do:** Reply "defaults" to accept A+B, or reply with any combination of letters to change which optional criteria are active. For example, replying `CD` activates C and D instead of A and B.
 
 ---
 
@@ -86,7 +86,7 @@ Tickets in these categories will always get per-ticket review.
 Press Enter to accept, or describe changes:
 ```
 
-**What to do:** Press Enter to accept. Or type a change, for example: "remove NSP-Session, add NSP-Crypto instead".
+**What to do:** Reply "accept" to proceed. Or describe a change, for example: "remove NSP-Session, add NSP-Crypto instead".
 
 ---
 

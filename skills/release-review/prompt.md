@@ -58,7 +58,7 @@ Optional additional criteria — select any to add:
   C. No rollback plan mentioned in PR or Jira
   D. PR had unresolved review comments at merge time
 
-Press Enter for defaults (A+B active), or type letters to toggle (e.g. "CD" activates C+D instead):
+Reply with your selection (e.g. "CD" to activate C+D instead of A+B), or say "defaults" to use A+B:
 ```
 
 Record the active criteria set. **Default = A and B active.** Apply throughout Phase 3.
@@ -90,7 +90,7 @@ Category spotlight — handle these with extra care:
   3. ...
 
 Tickets in these categories will always get per-ticket review regardless of risk tier.
-Press Enter to accept, or describe changes:
+Reply "accept" to proceed, or describe any changes you want to make:
 ```
 
 If the Jira query returns nothing, skip incident count and score on blast radius + recoverability only.
