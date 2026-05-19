@@ -185,6 +185,31 @@ Flag as **Critical** if staleness could cause a policy decision to evaluate
 against wrong data. Flag as **Minor** if the staleness affects logging only.
 Note pre-existing staleness bugs that the PR makes newly relevant.
 
+### Transformation assertion completeness
+When a test is designed to verify that a value is **replaced or transformed**
+(e.g., "spoofed IP → resolved IP", "raw domain → canonical form", "input token
+→ enriched struct"), verify that the test asserts the **actual output value**
+— not just a proxy or provenance field correlated with it.
+
+A common failure mode: the test sets up an input value X, triggers the
+transformation, then only asserts a source/status field (e.g.
+`ipSource == ResolvedIpFromSni`, `status == OK`) that is set as a side-effect
+of the transformation. If the input and expected output happen to be the same
+value — or if the transformation is broken but still sets the status field —
+the test passes while verifying nothing about the replacement behavior.
+
+Ask for every transformation test:
+1. What is the input value?
+2. What should the output value be after transformation?
+3. Is there an assertion comparing input to output, or asserting the specific
+   output value?
+4. If the transformation were entirely skipped (no-op), would the test still
+   pass?
+
+Flag as **Critical** if the entire behavioral contract of the feature under
+test is only verified via a proxy field — the test will pass even if the core
+transformation is broken.
+
 ### Base class pollution — prefer virtual dispatch
 When a PR adds state, methods, or logic to a base class that is only relevant to
 one subclass, flag it and suggest moving the new behavior to that subclass via a
