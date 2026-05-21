@@ -3,7 +3,7 @@
 **Jira:** ENG-710107
 **Date:** 2026-04-28
 **Author:** Amitayu Das
-**Status:** Agreed
+**Status:** Delivered (PR #14609, merged 2026-05-21)
 **Related specs:**
 - `2026-04-27-eng-710107-dest-addressing-impl.md` — forward-looking implementation guide
 - `2026-04-14-nplan6618-architectural-decisions.md` — architectural decision record
@@ -43,49 +43,30 @@ Stage 1 — SSL layer DNS resolution
         libs/netlayer/src/SslServerLayer.cpp:dnsLookup()
         libs/netlayer/src/SslServerLayer.cpp:dnsLookupSuccessHandler()
         libs/netlayer/src/SslServerLayer.cpp:dnsLookupFailureHandler()
-  What it does today: DNS resolves domain from SNI or InlineConnInfo. On success, calls
-                      setDestHostResolvedIp() with ResolvedIpFromSni or
-                      ResolvedIpFromInlineConnInfoDn. On failure, logs only.
-  What this feature changes:
-    - dnsLookupFailureHandler() now sets DnsAttemptedAndFailed sentinel and evaluates
-      defer-dns-error (global + tenant), caching result as m_dnsErrorSuppressClientIp.
-    - dnsLookupSuccessHandler() unchanged; setDestHostResolvedIp() now atomically
-      populates GeoIP and enforces advancement-only rule.
-  ipSource written: ResolvedIpFromSni | ResolvedIpFromInlineConnInfoDn | DnsAttemptedAndFailed
+  State today (post PR #14609): dnsLookupFailureHandler() sets DnsAttemptedAndFailed
+                      sentinel and evaluates defer-dns-error (global + tenant),
+                      caching result as m_dnsFailureSuppressClientProvidedDestIp.
+                      setDestHostResolvedIp() atomically populates GeoIP and enforces
+                      advancement-only rule via canAdvance()/isResolved() free functions.
+  Delivered in: PR #14609
 
 Stage 2 — SSL policy evaluation
   File: libs/netlayer/src/SslServerLayer.cpp:getPolicyAction()
-  What it does today: Reads m_destHost.value and getSslSniSource() for policy lookup.
-                      get_dstip() is called indirectly via bypass policy args.
-  What this feature changes: get_dstip() now driven purely by IpSource — no feature flag.
-  ipSource read: all values
+  State today (post PR #14609): get_dstip() driven purely by IpSource — no feature flag.
+  Delivered in: PR #14609
 
 Stage 3 — AppModuleLayer DNS skip
   File: libs/netlayer/src/AppModuleLayer.cpp:dnsLookup()
-  What it does today: Skips Stage 3 DNS when ALL THREE conditions hold:
-                        isDnsResolutionAttemptedInPrior() == true
-                        AND domain matches netSessDestHost.value
-                        AND isDestHostIpResolved() == true
-                      Falls through to DNS otherwise.
-  What this feature changes: When SSL-layer DNS fails, ipSource is now
-                             DnsAttemptedAndFailed. isDestHostIpResolved() returns
-                             false for this value, so the three-part skip condition
-                             does not fire — Stage 3 runs as expected.
-                             This resolves the concern raised in the NPLAN-6618 HLD
-                             appendix ("Implication for isDnsResolutionAttemptedInPrior()
-                             Skip Logic") that the skip would fire on failure and prevent
-                             defer-dns-error from being evaluated. With the sentinel, the
-                             skip correctly does not fire on failure. defer-dns-error is
-                             now evaluated at Stage 1 failure time (not as a Stage 3
-                             workaround) and the result is cached in m_dnsErrorSuppressClientIp.
-  ipSource read: ResolvedIpFrom* (for isDestHostIpResolved() skip decision)
+  State today (post PR #14609): DnsAttemptedAndFailed sentinel causes isDestHostIpResolved()
+                      to return false — Stage 3 runs correctly on DNS failure.
+                      HLD appendix skip-logic concern resolved.
+  Delivered in: PR #14609
 
-Stage 4 — HTTP layer GeoIP (ENG-970460, not yet implemented)
+Stage 4 — HTTP layer GeoIP (ENG-970460, pending)
   File: libs/http/src/HttpRequestEngine.cpp:populateBackDetailsInNetSession()
-  What it does today: Always calls populateBackGeoInfo() after HTTP-layer DNS.
-  What this feature changes: Nothing yet. ENG-970460 will add a conditional — skip if
-                             destGeoIpResult already populated from a DNS-resolved IP.
-  ipSource read: (future) OriginalDestIp check to decide whether to re-populate
+  State today: Always calls populateBackGeoInfo() after HTTP-layer DNS.
+  Pending: ENG-970460 will add conditional re-population, rename, back Conn
+           redundancy elimination, get_dst_country() caching.
 ```
 
 ---
@@ -208,17 +189,14 @@ Result: m_backGeoIpResult remains null; get_dst_country() falls through to live 
 
 ## Known Gaps and Deferred Work
 
-1. **ENG-970460 — GeoIP consolidation (partially delivered; remainder outstanding):**
-   - Rename `m_backGeoIpResult` → `m_destGeoIpResult`, `populateBackGeoInfo()` →
-     `populateDestGeoInfo()`, `getBackGeoIpResult()` → `getDestGeoIpResult()`.
-   - Eliminate back Conn GeoIP redundancy: remove seeding in `setupBackendInfo()` and
-     `copyGeoIpResultToLocal()` rescue on teardown.
-   - Conditional re-population at HTTP layer: skip `populateDestGeoInfo()` if
-     `ipSource >= ResolvedIpFromInlineConnInfoDn` (already DNS-resolved).
-   - Update `get_dst_country()` to check session field first, skip live lookup if valid.
-   - **Note:** Early GeoIP population from SSL layer is delivered by this PR via
-     `populateBackGeoInfo()` inside `setDestHostResolvedIp()`. The four items above
-     remain outstanding in ENG-970460.
+1. **ENG-970460 — GeoIP consolidation (remainder outstanding):**
+   PR #14609 delivered early SSL-layer GeoIP population via `populateBackGeoInfo()`
+   inside `setDestHostResolvedIp()`. The following remain in ENG-970460:
+   - Rename `m_backGeoIpResult` → `m_destGeoIpResult` (and related APIs)
+   - Eliminate back Conn GeoIP redundancy
+   - Conditional HTTP-layer re-population
+   - Cache live lookup result in `get_dst_country()`
+   See `2026-05-19-eng-970460-geoip-consolidation-design.md` for full design.
 
 2. **Domain fronting (Point 9, NPLAN-6618 ADR):**
    When SNI ≠ HTTP Host header, the HTTP Host resolution (ipSource = 8) silently advances
@@ -266,7 +244,7 @@ PR #14206 (merged 2026-04-27, commit 8d5d362579):
   Left open: Contracts 1 (sentinel), 2, 3, 4 (flag retirement), 5 (dangling ptr),
              6, 7, 8, 9 (audit), 10 (test assertion).
 
-ENG-710107 / feature/eng-710107-dest-addressing (this branch):
+ENG-710107 / feature/eng-710107-dest-addressing (PR #14609, merged 2026-05-21):
   Delivered: All 10 contracts.
   Also delivers: Early SSL-layer GeoIP population (ENG-970460) via
                  `populateBackGeoInfo()` inside `setDestHostResolvedIp()`.
@@ -334,16 +312,17 @@ flowchart TD
 
 ---
 
-### Diagram 4 — What remains outstanding
+### Diagram 4 — What remains outstanding (post PR #14609, merged 2026-05-21)
 
 ```mermaid
 flowchart TD
-    A[ENG-970460: GeoIP consolidation] --> B[Rename m_backGeoIpResult\n→ m_destGeoIpResult]
+    A[ENG-970460: GeoIP consolidation\nSee eng-970460 design spec] --> B[Rename m_backGeoIpResult\n→ m_destGeoIpResult]
     A --> C[Eliminate back Conn\nGeoIP redundancy]
     A --> D[HTTP layer conditional\nre-population]
-    A --> E[get_dst_country update]
-    F[Row 4b gap] --> G[F2P present + defer-dns-error disabled\nget_dstip returns client IP\ninstead of nullptr\nArchitectural limitation:\nget_dstip called before policy eval]
-    H[Domain fronting] --> I[SNI ≠ HTTP Host\nPolicy evaluated against SNI\nTraffic goes to HTTP Host\nNeeds separate ticket]
-    J[AppModuleLayer cleanup] --> K[isDnsResolutionAttemptedInPrior flag\nbecomes redundant after ENG-970460\nsimplify skip gate to isDestHostIpResolved only]
-    L[ResolvedIpFromHttpHost ipSource=8] --> M[Enum value exists\nbut no code path sets it yet\nreserved for HTTP-layer DNS]
+    A --> E[Cache live lookup in\nget_dst_country]
+    F[Row 4b gap\nNeeds separate ticket] --> G[F2P present + defer-dns-error disabled\nget_dstip returns client IP\nArchitectural: get_dstip called before policy eval]
+    H[Domain fronting\nNeeds separate ticket] --> I[SNI ≠ HTTP Host\nSecurity control gap\nNeeds policy re-eval on mismatch]
+    J[AppModuleLayer cleanup\nAfter ENG-970460] --> K[isDnsResolutionAttemptedInPrior\nbecomes redundant\nsimplify to isDestHostIpResolved only]
+    L[ResolvedIpFromHttpHost ipSource=8\nAfter ENG-970460] --> M[No code path sets it yet\nReserved for HTTP-layer DNS]
+    N[ConnInfo::m_geoIpResult rename\nSeparate follow-on ticket] --> O[Rename to m_sourceGeoIpResult\nFront Conn source GeoIP only\nafter back Conn seeding removed]
 ```
