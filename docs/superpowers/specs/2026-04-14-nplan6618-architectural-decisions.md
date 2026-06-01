@@ -630,3 +630,81 @@ The `ns_netutil_is_ip_addr()` guard excludes IP-in-SNI connections from the
 check entirely. When SNI is an IP, `ipSource` is `OriginalDestIpFromSni` (an
 unresolved value) and the Host header domain will naturally differ — but there
 is no policy evasion occurring.
+
+---
+
+### Implementation approach decision
+
+**Jira:** ENG-1036449
+
+**Decision: phased approach — Phase 1 blocks unconditionally; Phase 2 re-evaluates policy**
+
+#### Why Option 1 is the correct end state
+
+The HTTP Host header is the true application-layer destination. The SNI-based
+policy decision was made against the wrong domain. A proxy that decrypted the
+traffic and discovered the real destination has an obligation to evaluate policy
+against it. Allowing traffic to `blocked.com` because policy passed for
+`allowed.com` is a security control failure regardless of how the traffic
+arrives.
+
+#### Why Phase 1 implements Option 2 (block unconditionally)
+
+Option 1 (re-evaluate policy against the Host header domain) requires three
+prerequisites that are not yet in place:
+
+1. **`ResolvedIpFromHttpHost` (ipSource = 8) production** — this enum value
+   exists but no code path sets it. Implementing Option 1 requires advancing
+   `ipSource` to `ResolvedIpFromHttpHost` when the Host-header domain is
+   DNS-resolved mid-flow. This is precisely the gap documented as Known Gap #1
+   in `2026-05-19-eng-970460-geoip-consolidation-design.md`.
+
+2. **Async DNS mid-flow** — `updateNetSessionDestHost()` runs synchronously
+   during HTTP request processing. A fresh DNS lookup for the Host header domain
+   requires going async mid-flow — the same mechanism NPLAN-6618 added at the
+   SSL layer, but at a later, more complex point in the pipeline.
+
+3. **`lookupPolicyAction()` re-evaluation** — re-running policy with a different
+   domain mid-HTTP-processing requires carefully resetting session state
+   (`m_destHost`, GeoIP, policy result) without leaving the session inconsistent.
+
+Phase 1 (Option 2 — block unconditionally) is simpler, correct, and deployable
+immediately. No legitimate modern client sends SNI=A and Host=B for different
+domains. Any mismatch is either misconfigured software or intentional evasion.
+Terminating with a block event is safe and enforces the security control from
+day one.
+
+#### Phase 1 deliverable (ENG-1036449)
+
+Implement the detection check in `updateNetSessionDestHost()` with the
+`ns_netutil_is_ip_addr()` guard (see Implementation note above). On mismatch:
+- Terminate the connection with a policy block event
+- Log both the SNI domain and the Host header domain for admin visibility
+- Emit a transaction event so the mismatch is observable in reporting
+
+A staged config gate should be added (defaulting to `true` — enforce) so
+operators can disable blocking if needed during rollout, consistent with the
+deployment safety pattern used elsewhere in NPLAN-6618.
+
+#### Phase 2 deliverable (separate follow-on ticket)
+
+Replace the unconditional block with full policy re-evaluation:
+1. Detect SNI ≠ Host mismatch (same check as Phase 1)
+2. Resolve Host header domain via DNS (fresh lookup — SNI-resolved IP is for
+   the wrong domain and must not be reused)
+3. Advance `ipSource` to `ResolvedIpFromHttpHost` via `setDestHostResolvedIp()`
+   — this closes ENG-970460 Known Gap #1
+4. Re-run `lookupPolicyAction()` against Host domain and its resolved IP
+5. If new decision is BLOCK → terminate with domain-fronting block event
+6. If new decision is ALLOW → connect to Host domain's resolved IP
+
+**Prerequisite for Phase 2:** ENG-970460 Known Gap #1 must be resolved first
+(`ResolvedIpFromHttpHost` production). Phase 2 ticket should be created after
+ENG-1036449 is delivered and the gap ticket is in progress.
+
+#### Option 3 (log and allow) — not in scope
+
+Useful only as a temporary diagnostic tool during staged rollout. Phase 1's
+staged config gate provides the same rollback capability without requiring a
+separate log-only mode. Option 3 is not an acceptable end state and should not
+be implemented as a permanent path.
