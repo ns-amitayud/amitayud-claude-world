@@ -605,3 +605,28 @@ It requires a separate ticket.
 **When:** After `destinfo->domain` is available and before `setDestHost()` is
 called — compare `m_conn->getSslSni()` against `destinfo->domain` and act on
 mismatch per the chosen option above.
+
+### Implementation note — exclude IP-in-SNI from the check
+
+The comparison `getSslSni() != destinfo->domain` must be guarded against the
+case where the client sends a raw IP address in the SNI field with a domain in
+the HTTP Host header (e.g., `SNI = 1.2.3.4`, `Host: example.com`). This is
+**not** domain fronting — it is legitimate HTTP/1.1 behavior for clients
+connecting to a server by IP while specifying a virtual host. Triggering the
+domain fronting check here would produce false positives.
+
+The check should only fire when the SNI is itself a domain name:
+
+```cpp
+const auto &sni = m_conn->getSslSni();
+if (!sni.empty()
+    && !ns_netutil_is_ip_addr(sni.c_str(), nullptr)
+    && sni != destinfo->domain) {
+    // domain fronting detected — act per chosen option
+}
+```
+
+The `ns_netutil_is_ip_addr()` guard excludes IP-in-SNI connections from the
+check entirely. When SNI is an IP, `ipSource` is `OriginalDestIpFromSni` (an
+unresolved value) and the Host header domain will naturally differ — but there
+is no policy evasion occurring.
