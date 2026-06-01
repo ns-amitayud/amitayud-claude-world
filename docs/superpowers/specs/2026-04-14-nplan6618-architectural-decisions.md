@@ -517,9 +517,9 @@ See `~/.claude/review-context/netSkope-dataplane-14206-review-findings.md` Findi
 
 ---
 
-## Point 9 — Domain Fronting: Known Gap in NPLAN-6618
+## Point 9 — Domain Fronting: NPLAN-6618 Gap Analysis
 
-**Status: Identified — not addressed by PR #14206 or PR #14246**
+**Status: Partially addressed — detection and blocking already exist; bypass path is the remaining gap**
 
 ### What is domain fronting
 
@@ -536,100 +536,103 @@ header, and forwards the request to `blocked.com`. From nsproxy's perspective,
 policy was evaluated against `allowed.com` and allowed — but the actual content
 served is from `blocked.com`.
 
-### The attack path that remains open after PR #14206
+### Correction: detection and blocking already exist
+
+**Initial analysis was incomplete.** `detectDomainFronting()` already exists in
+`HttpRequestEngine::runRequestHeader()` (line 1071 of `HttpRequestEngine.cpp`)
+and already:
+
+- Detects SNI ≠ Host header mismatch using `m_nsession.frontConn()->getSslSni()`
+  vs the HTTP Host/URL host fields
+- Performs cert-based exception check (`domainFrontingCertCheck()`)
+- Checks global and per-tenant exception lists
+- **Blocks the connection** when `isPolicyBypass(DOMAIN_FRONTING)` is false —
+  calls `sendDomainFrontingErrToFront()` and returns `NS_NBERR`
+- Sets transaction event fields: `setDomainFronting()`, `setDomainFrontingAction(BLOCK)`
+
+The check runs in `runRequestHeader()` — **before** `updateNetSessionDestHost()`
+runs in `runRequestModProcess()`. So detection happens at the right point.
+
+**Option 2 (block unconditionally) is therefore already implemented.**
+
+### The attack path that remains open — the bypass path
+
+The remaining gap is the **bypass/allow path**. When domain fronting is detected
+but the connection is allowed through (via bypass policy or exception list),
+`updateNetSessionDestHost()` silently updates `m_destHost` to the Host header
+domain while the back connection still uses the SNI-resolved IP:
 
 ```
 1. Client sends SNI = allowed.com
-2. SSL layer resolves allowed.com → 1.2.3.4, stores DnsResolvedIpUsingSni
+2. SSL layer resolves allowed.com → 1.2.3.4, stores ResolvedIpFromSni
 3. getPolicyAction() evaluates against allowed.com / 1.2.3.4 → ALLOW
 4. TLS decrypted; HTTP Host: blocked.com arrives
-5. updateNetSessionDestHost() silently sets m_destHost.value = blocked.com
-6. AppModuleLayer::dnsLookup() domain comparison matches (both are now
-   blocked.com), so it returns the SNI-resolved IP (1.2.3.4) as the answer
-7. Back connection goes to 1.2.3.4 (allowed.com's server) with Host: blocked.com
+5. detectDomainFronting() detects mismatch → but bypass policy ALLOWS it through
+6. updateNetSessionDestHost() sets m_destHost.value = blocked.com
+7. Back connection goes to 1.2.3.4 (allowed.com's IP) with Host: blocked.com
 8. allowed.com's CDN routes internally to blocked.com
-9. Policy was never evaluated for blocked.com — domain fronting succeeds
+9. Policy was evaluated against allowed.com, not blocked.com — domain fronting
+   succeeds at the CDN level despite being "detected"
 ```
 
-### Where the fix belongs
-
-`HttpRequestEngine::updateNetSessionDestHost()` — the earliest point where
-the HTTP `Host` header is parsed and the mismatch is detectable. At this
-point the proxy knows both:
-- `m_conn->getSslSni()` — the SNI domain used for the original policy decision
-- `destinfo->domain` — the true application-layer destination from Host header
-
-If these differ, the proxy is in a domain fronting scenario.
-
-### Required behaviour (in order of correctness)
-
-**Option 1 — Re-evaluate policy against the Host header domain (correct)**
-
-The SNI-based policy decision used the wrong domain. On detecting mismatch:
-1. Resolve `blocked.com` via DNS (fresh lookup — SNI-resolved IP is for the
-   wrong domain and must not be reused)
-2. Re-run `lookupPolicyAction()` against `blocked.com` and its resolved IP
-3. If new decision is BLOCK → terminate with a domain-fronting block event
-4. If new decision is ALLOW → connect to `blocked.com`'s IP
-
-**Option 2 — Block unconditionally on SNI ≠ Host mismatch (simpler)**
-
-Any SNI/Host mismatch is either misconfigured software or an intentional
-evasion attempt. No legitimate modern client should send SNI=A and Host=B
-for different domains. Terminate immediately with a policy block event logging
-both domains.
-
-**Option 3 — Log and allow (staged rollout only)**
-
-Emit a security event noting the mismatch, proceed without blocking. Gives
-visibility for operators to understand scope before enabling enforcement.
-Not an acceptable end state.
-
-**Doing nothing (current behaviour) is categorically wrong.** The proxy
-decrypted the traffic and has an obligation to use what it learned. Silently
-forwarding after a policy decision made against a different domain is a
-security control failure.
+**The proxy correctly detected the mismatch, but the bypass path allows the
+attack to succeed anyway** — the back connection uses the wrong IP for the
+wrong domain and the CDN completes the fronting.
 
 ### Relationship to existing NPLAN-6618 checks
 
 PR #14206 detects SNI ≠ CONNECT host in `handleSniReceivedScenario()` at the
 SSL layer (before decryption) and defers proper handling to NPLAN-143 Phase 2.
-Domain fronting (SNI ≠ HTTP Host) is a separate, later check at the HTTP layer
-(after decryption) and is not covered by NPLAN-143 Phase 2 as currently scoped.
-It requires a separate ticket.
+Domain fronting (SNI ≠ HTTP Host) is handled at the HTTP layer via
+`detectDomainFronting()` in `runRequestHeader()` — a separate, later check.
+The blocking path is complete. The bypass/allow path is the remaining gap.
 
-### Where to implement
+### Required behaviour for the remaining gap — Option 1
+
+**Option 1 — Re-evaluate policy against the Host header domain (correct end state)**
+
+When domain fronting is detected and the connection is allowed through (bypass
+or exception), the proxy must not use the SNI-resolved IP for the back
+connection. Instead:
+1. Resolve the Host header domain via fresh DNS (SNI-resolved IP is for the
+   wrong domain and must not be reused)
+2. Re-run `lookupPolicyAction()` against the Host domain and its resolved IP
+3. If the new decision is BLOCK → terminate with a domain-fronting block event
+4. If the new decision is ALLOW → connect to the Host domain's resolved IP
+
+**Option 2 (block unconditionally) — already implemented** in
+`detectDomainFronting()` + `isPolicyBypass(DOMAIN_FRONTING)`.
+
+**Option 3 (log and allow) — not an acceptable end state.**
+
+### Where to implement Option 1
 
 **File:** `libs/http/src/HttpRequestEngine.cpp`
-**Function:** `HttpRequestEngine::updateNetSessionDestHost()`
-**When:** After `destinfo->domain` is available and before `setDestHost()` is
-called — compare `m_conn->getSslSni()` against `destinfo->domain` and act on
-mismatch per the chosen option above.
+**Location:** In the bypass path after `detectDomainFronting()` returns true
+and `isPolicyBypass(DOMAIN_FRONTING)` is true — before the back connection is
+established. The new work replaces the current silent pass-through with a
+fresh DNS + policy re-evaluation against the Host domain.
 
 ### Implementation note — exclude IP-in-SNI from the check
 
-The comparison `getSslSni() != destinfo->domain` must be guarded against the
-case where the client sends a raw IP address in the SNI field with a domain in
-the HTTP Host header (e.g., `SNI = 1.2.3.4`, `Host: example.com`). This is
-**not** domain fronting — it is legitimate HTTP/1.1 behavior for clients
-connecting to a server by IP while specifying a virtual host. Triggering the
-domain fronting check here would produce false positives.
+The comparison `getSslSni() != host` must be guarded against the case where
+the client sends a raw IP address in the SNI field with a domain in the HTTP
+Host header (e.g., `SNI = 1.2.3.4`, `Host: example.com`). This is **not**
+domain fronting — it is legitimate HTTP/1.1 behavior. The existing
+`detectDomainFronting()` handles this correctly: it returns false early when
+the SNI is empty or the SNI equals the host; the IP-in-SNI case produces a
+different domain mismatch that does not constitute evasion.
 
-The check should only fire when the SNI is itself a domain name:
+The guard for new code:
 
 ```cpp
-const auto &sni = m_conn->getSslSni();
+const auto &sni = m_nsession.frontConn()->getSslSni();
 if (!sni.empty()
     && !ns_netutil_is_ip_addr(sni.c_str(), nullptr)
     && sni != destinfo->domain) {
-    // domain fronting detected — act per chosen option
+    // domain fronting in bypass path — re-evaluate policy
 }
 ```
-
-The `ns_netutil_is_ip_addr()` guard excludes IP-in-SNI connections from the
-check entirely. When SNI is an IP, `ipSource` is `OriginalDestIpFromSni` (an
-unresolved value) and the Host header domain will naturally differ — but there
-is no policy evasion occurring.
 
 ---
 
@@ -637,74 +640,49 @@ is no policy evasion occurring.
 
 **Jira:** ENG-1036449
 
-**Decision: phased approach — Phase 1 blocks unconditionally; Phase 2 re-evaluates policy**
+**Decision: Option 1 (re-evaluate policy in the bypass path) is the sole
+remaining deliverable. Option 2 (blocking) is already implemented.**
 
 #### Why Option 1 is the correct end state
 
-The HTTP Host header is the true application-layer destination. The SNI-based
-policy decision was made against the wrong domain. A proxy that decrypted the
-traffic and discovered the real destination has an obligation to evaluate policy
-against it. Allowing traffic to `blocked.com` because policy passed for
-`allowed.com` is a security control failure regardless of how the traffic
-arrives.
+The HTTP Host header is the true application-layer destination. When the proxy
+allows a domain-fronted connection through (via bypass or exception), it must
+still ensure the back connection goes to the correct IP and policy is evaluated
+against the true destination. Using the SNI-resolved IP with a different Host
+header is a security control failure even when the fronting is "known".
 
-#### Why Phase 1 implements Option 2 (block unconditionally)
-
-Option 1 (re-evaluate policy against the Host header domain) requires three
-prerequisites that are not yet in place:
+#### Option 1 prerequisites
 
 1. **`ResolvedIpFromHttpHost` (ipSource = 8) production** — this enum value
-   exists but no code path sets it. Implementing Option 1 requires advancing
-   `ipSource` to `ResolvedIpFromHttpHost` when the Host-header domain is
-   DNS-resolved mid-flow. This is precisely the gap documented as Known Gap #1
-   in `2026-05-19-eng-970460-geoip-consolidation-design.md`.
+   exists but no code path sets it. Option 1 requires advancing `ipSource` to
+   `ResolvedIpFromHttpHost` when the Host-header domain is DNS-resolved. This
+   closes ENG-970460 Known Gap #1 (see `2026-05-19-eng-970460-geoip-consolidation-design.md`).
 
-2. **Async DNS mid-flow** — `updateNetSessionDestHost()` runs synchronously
-   during HTTP request processing. A fresh DNS lookup for the Host header domain
-   requires going async mid-flow — the same mechanism NPLAN-6618 added at the
-   SSL layer, but at a later, more complex point in the pipeline.
+2. **Async DNS mid-flow** — a fresh DNS lookup for the Host header domain
+   requires going async mid-HTTP-processing — the same mechanism NPLAN-6618
+   added at the SSL layer, but at a later, more complex point in the pipeline.
 
 3. **`lookupPolicyAction()` re-evaluation** — re-running policy with a different
-   domain mid-HTTP-processing requires carefully resetting session state
-   (`m_destHost`, GeoIP, policy result) without leaving the session inconsistent.
+   domain requires carefully resetting session state (`m_destHost`, GeoIP,
+   policy result) without leaving the session inconsistent.
 
-Phase 1 (Option 2 — block unconditionally) is simpler, correct, and deployable
-immediately. No legitimate modern client sends SNI=A and Host=B for different
-domains. Any mismatch is either misconfigured software or intentional evasion.
-Terminating with a block event is safe and enforces the security control from
-day one.
+#### ENG-1036449 deliverable
 
-#### Phase 1 deliverable (ENG-1036449)
-
-Implement the detection check in `updateNetSessionDestHost()` with the
-`ns_netutil_is_ip_addr()` guard (see Implementation note above). On mismatch:
-- Terminate the connection with a policy block event
-- Log both the SNI domain and the Host header domain for admin visibility
-- Emit a transaction event so the mismatch is observable in reporting
-
-A staged config gate should be added (defaulting to `true` — enforce) so
-operators can disable blocking if needed during rollout, consistent with the
-deployment safety pattern used elsewhere in NPLAN-6618.
-
-#### Phase 2 deliverable (separate follow-on ticket)
-
-Replace the unconditional block with full policy re-evaluation:
-1. Detect SNI ≠ Host mismatch (same check as Phase 1)
-2. Resolve Host header domain via DNS (fresh lookup — SNI-resolved IP is for
-   the wrong domain and must not be reused)
+Implement Option 1 in the bypass path:
+1. Detect SNI ≠ Host mismatch in the bypass/allow path (after
+   `detectDomainFronting()` returns true and connection is allowed through)
+2. Resolve Host header domain via fresh DNS
 3. Advance `ipSource` to `ResolvedIpFromHttpHost` via `setDestHostResolvedIp()`
-   — this closes ENG-970460 Known Gap #1
+   — closes ENG-970460 Known Gap #1
 4. Re-run `lookupPolicyAction()` against Host domain and its resolved IP
-5. If new decision is BLOCK → terminate with domain-fronting block event
-6. If new decision is ALLOW → connect to Host domain's resolved IP
+5. If BLOCK → terminate with domain-fronting block event
+6. If ALLOW → connect to Host domain's resolved IP
 
-**Prerequisite for Phase 2:** ENG-970460 Known Gap #1 must be resolved first
-(`ResolvedIpFromHttpHost` production). Phase 2 ticket should be created after
-ENG-1036449 is delivered and the gap ticket is in progress.
+**Prerequisite:** ENG-970460 Known Gap #1 (`ResolvedIpFromHttpHost` production)
+must be resolved first.
 
 #### Option 3 (log and allow) — not in scope
 
-Useful only as a temporary diagnostic tool during staged rollout. Phase 1's
-staged config gate provides the same rollback capability without requiring a
-separate log-only mode. Option 3 is not an acceptable end state and should not
-be implemented as a permanent path.
+Not an acceptable end state. The existing blocking path already provides
+visibility via transaction events. Option 3 is not implemented as a permanent
+path.
