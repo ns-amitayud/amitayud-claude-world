@@ -3,7 +3,7 @@
 **Jira:** ENG-970460
 **Date:** 2026-05-19
 **Author:** Amitayu Das
-**Status:** Draft
+**Status:** Delivered (PR #15018, merged 2026-06-01)
 **Related specs:**
 - `2026-04-28-eng-710107-dest-addressing-design.md` — predecessor; delivered early SSL-layer GeoIP population
 - `2026-04-14-nplan6618-architectural-decisions.md` — NPLAN-6618 architectural decision record
@@ -83,65 +83,37 @@ node tags to construct Diagram 2 (scope box) and Diagram 3 (zoomed detail).
 ## Execution Stages Affected
 
 ```
-Stage 1 — SSL layer DNS resolution (ENG-710107, already done)  [Deliverable #1]
+Stage 1 — SSL layer DNS resolution  [Deliverable #1 — Delivered PR #15018]
   File: libs/netsvc/NetSession.hpp:setDestHostResolvedIp()
-  What it does today: calls populateBackGeoInfo() atomically on DNS success,
-                      storing result in m_backGeoIpResult.
-  What this feature changes: rename populateBackGeoInfo → populateDestGeoInfo,
-                             m_backGeoIpResult → m_destGeoIpResult.
+  State: calls populateDestGeoInfo() atomically on DNS success,
+         storing result in m_destGeoIpResult.
 
-Stage 2 — SSL policy evaluation  [Deliverable #4]
+Stage 2 — SSL policy evaluation  [Deliverable #4 — Delivered PR #15018]
   File: libs/netlayer/src/SslServerLayer.cpp:getPolicyAction()
         libs/netsvc/src/NetSession.cpp:get_dst_country()
-  What it does today: get_dst_country() calls getBackGeoIpResult(); if null,
-                      does throwaway ns_geoip_get_loc() (result discarded after
-                      returning country string). Gated by ssl_dnd_evaluate_dest_country
-                      feature flag in PolicyAssignValueGetter.cpp:940.
-  What this feature changes: rename getBackGeoIpResult → getDestGeoIpResult.
-                             After rename, get_dst_country() reads session field first.
-                             If populated (SSL-layer DNS succeeded), no live lookup needed.
-                             Fallback live lookup fires when m_destGeoIpResult is null,
-                             but result is now cached in m_destGeoIpResult via
-                             populateDestGeoInfo() — making it the single source of truth
-                             on all paths. Throwaway local geoipResult variable and
-                             ns_geoip_free_results() call are removed.
-                             buf/bufsz parameters: kept for interface compatibility with
-                             BypassPolicyCfg.hpp virtual signature and the
-                             handle_bypass_policy_args() calling convention in
-                             PolicyAssignValueGetter.cpp which passes a stack buffer.
-                             Since get_dst_country() now returns cached->country.ptr
-                             (a pointer valid for the connection lifetime), buf is unused.
-                             Parameters are left unnamed in the implementation — no callers
-                             need to change.
+        libs/ftp/src/FtpPolicy.cpp:get_dst_country()
+  State: get_dst_country() reads getDestGeoIpResult() first. If populated
+         (SSL-layer DNS succeeded), no live lookup. Fallback fires when
+         m_destGeoIpResult is null, caches result via populateDestGeoInfo().
+         buf/bufsz parameters unnamed — callers use return value directly.
 
-Stage 3 — AppModuleLayer DNS / back Conn setup  [Deliverable #2, part 1]
-  File: libs/netsvc/src/NetSession.cpp:setupBackendInfo() (ln 668)
-  What it does today: seeds back ConnInfo with session GeoIP via
-                      backendInfo->setGeoIpResult(&m_backGeoIpResult).
-  What this feature changes: remove this seeding — back ConnInfo GeoIP is never
-                             independently updated; getDestGeoIpResult() will return
-                             the session field directly.
+Stage 3 — AppModuleLayer DNS / back Conn setup  [Deliverable #2 — Delivered PR #15018]
+  File: libs/netsvc/src/NetSession.cpp:setupBackendInfo()
+  State: GeoIP seeding removed. Back ConnInfo m_geoIpResult never populated
+         in production. getDestGeoIpResult() returns session field directly.
 
-Stage 4 — HTTP layer GeoIP  [Deliverable #3]
-  File: libs/http/src/HttpRequestEngine.cpp:populateBackDetailsInNetSession() (ln 2252)
-  What it does today: always calls populateBackGeoInfo(destIp) when back not connected.
-  What this feature changes: add conditional — skip if ipSource > UnresolvedByProxy
-                             (already DNS-resolved at SSL layer). Re-populate only when
-                             ipSource is in the unresolved group (client-provided IP,
-                             potentially spoofed).
-                             Note: if get_dst_country() already populated m_destGeoIpResult
-                             at Stage 2 (fallback path), populateDestGeoInfo() here
-                             overwrites it with the HTTP-layer DNS-resolved IP, which is
-                             more trustworthy. This is correct — the HTTP-layer IP is
-                             always from a service-performed DNS resolution.
+Stage 4 — HTTP layer GeoIP  [Deliverable #3 — Delivered PR #15018]
+  File: libs/http/src/HttpRequestEngine.cpp:populateBackDetailsInNetSession()
+  State: conditional skip when ssl_layer_geoip_preserve enabled (global staged
+         config + per-tenant HttpFeatures flag, both default true) AND
+         isResolved(ipSource). Falls back to always-populate when either flag
+         is false. FTP path (FtpPolicy::get_dst_country) also caches via
+         populateDestGeoInfo().
 
-Stage 5 — Teardown  [Deliverable #2, part 2]
-  File: libs/netsvc/src/NetSession.cpp:teardown() (ln 830)
-        libs/netsvc/src/NetSession.cpp:copyGeoIpResultToLocal() (ln 799)
-  What it does today: copies back Conn GeoIP to session field before back Conn release.
-                      This is now a no-op since back Conn GeoIP is seeded FROM session field.
-  What this feature changes: remove copyGeoIpResultToLocal() call from teardown.
-                             Remove copyGeoIpResultToLocal() function entirely.
+Stage 5 — Teardown  [Deliverable #2 — Delivered PR #15018]
+  File: libs/netsvc/src/NetSession.cpp:teardown()
+  State: copyGeoIpResultToLocal() removed entirely. teardown() no longer
+         copies back Conn GeoIP to session field.
 ```
 
 ---
@@ -325,36 +297,42 @@ Result: getDestGeoIpResult() returns session field directly. All callers
    refactor with risk to the egress IP and source GeoIP paths. Out of scope for
    this ticket. The back Conn field becoming unpopulated is the practical outcome.
 
-   **Deferred follow-on:** After ENG-970460, `m_geoIpResult` on the back Conn
+   **Deferred follow-on (ENG-1025911):** After ENG-970460, `m_geoIpResult` on the back Conn
    is permanently unpopulated — it is exclusively a front Conn field holding the
    client's source location GeoIP. Renaming it to `m_sourceGeoIpResult` in
    `ConnInfo` (and all callers) would reflect this purpose unambiguously without
    any structural change to `ConnInfo`. This is a mechanical rename, similar in
    scope to Change 1 in this ticket. Recommended as a separate follow-on ticket.
 
+5. **GeoIP mock in `appmodule_http_proxy_test` (ENG-1031558):** Skeleton tests
+   for `ssl-layer-geoip-preserve` guard logic exist in
+   `libs/http/test/ns_http_appmodulehttpproxy_test/src/cpp/SslLayerGeoIpPreserveTest.cpp`
+   with `GTEST_SKIP()` markers and `seedDestGeoIpResult()` stub. Full coverage
+   requires a mockable `ns_geoip_get_loc()` stub or direct injection of
+   `ns_geoip_result_t` into `m_destGeoIpResult`. Two implementation options
+   documented in the stub. See ENG-1031558 Jira for 4-step TDD action list.
+
 ---
 
 ## Implementation Breakdown
 
 ```
-Single PR for all 4 changes:
+PR #15018 (merged 2026-06-01) — eng-970460/geoip → develop:
   Change 1 — Rename (m_backGeoIpResult → m_destGeoIpResult,
                       populateBackGeoInfo → populateDestGeoInfo,
                       getBackGeoIpResult → getDestGeoIpResult; 13 call sites)
   Change 2 — Eliminate back Conn redundancy (setupBackendInfo seeding + teardown copy)
-  Change 3 — Conditional HTTP-layer re-population
+  Change 3 — Conditional HTTP-layer re-population with two-level safety gate
+             (ssl-layer-geoip-preserve global staged config + per-tenant HttpFeatures
+             flag, both default true). Per-tenant flag in http_features.featurec.
   Change 4 — get_dst_country() caching: replace throwaway live lookup with
-             populateDestGeoInfo(); remove local geoipResult variable and
-             ns_geoip_free_results(); leave buf/bufsz unnamed.
+             populateDestGeoInfo(); buf/bufsz unnamed (interface compat only).
 
-Implementation order within PR:
-  1. Change 2 first (confirm safety of removing back Conn seeding)
-  2. Change 1 (rename — mechanical, all callers updated atomically)
-  3. Change 3 (conditional, depends on rename)
-  4. Change 4 (caching logic, depends on rename)
-
-Dependency: branch off feature/eng-710107-dest-addressing or develop after
-that PR merges. Do not start development until PR #14609 is merge-imminent.
+Additional deliverables added during review:
+  - FtpPolicy::get_dst_country() updated to use populateDestGeoInfo() (Copilot review)
+  - SslLayerGeoIpPreserveGlobalCfg staged config + featurec flag (ns-lwu review)
+  - ENG-1031558 created: mock GeoIP in appmodule_http_proxy_test skeleton
+    (ns-lwu review; tests in SslLayerGeoIpPreserveTest.cpp with GTEST_SKIP markers)
 ```
 
 ---
@@ -390,4 +368,26 @@ flowchart TD
     class A,B,C,E,F,G2,J2 existing
     class D,G,H,J enhanced
     class H2 newnode
+```
+
+### Diagram 4 — What remains outstanding (post PR #15018)
+
+```mermaid
+flowchart TD
+    A[ENG-970460 delivered\nPR 15018 merged 2026-06-01] --> B
+
+    subgraph open [Open follow-on tickets]
+        B[ENG-1025911\nRename ConnInfo::m_geoIpResult\n→ m_sourceGeoIpResult\nMechanical rename ~33 touch points]
+        C[ENG-1031558\nMock ns_geoip_get_loc in tests\nComplete SslLayerGeoIpPreserveTest.cpp\nRemove GTEST_SKIP markers]
+    end
+
+    subgraph gaps [Architectural gaps — no ticket yet]
+        D[ResolvedIpFromHttpHost ipSource=8\nnot yet produced by any code path]
+        E[isDnsResolutionAttemptedInPrior\nredundant after ENG-970460\ncan be simplified to isDestHostIpResolved]
+        F[Row 4b architectural gap\ninherited from ENG-710107\nsee 2026-04-28 spec §Known Gaps item 5]
+    end
+
+    A --> D
+    A --> E
+    A --> F
 ```
