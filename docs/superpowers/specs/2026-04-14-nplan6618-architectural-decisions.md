@@ -615,24 +615,31 @@ fresh DNS + policy re-evaluation against the Host domain.
 
 ### Implementation note — exclude IP-in-SNI from the check
 
-The comparison `getSslSni() != host` must be guarded against the case where
-the client sends a raw IP address in the SNI field with a domain in the HTTP
-Host header (e.g., `SNI = 1.2.3.4`, `Host: example.com`). This is **not**
-domain fronting — it is legitimate HTTP/1.1 behavior. The existing
-`detectDomainFronting()` handles this correctly: it returns false early when
-the SNI is empty or the SNI equals the host; the IP-in-SNI case produces a
-different domain mismatch that does not constitute evasion.
+When a client sends a raw IP address in the SNI field with a domain in the
+HTTP Host header (e.g., `SNI = 1.2.3.4`, `Host: example.com`), this is **not**
+domain fronting — it is legitimate HTTP/1.1 behavior for IP-direct connections.
 
-The guard for new code:
+**Correction (2026-06-03):** The earlier claim that `detectDomainFronting()`
+handles this correctly was wrong. `detectDomainFronting()` only returns false
+early for empty SNI or SNI == host. It does **not** check whether the SNI is
+an IP address. If `SNI = 1.2.3.4` and `Host: example.com`, the function
+proceeds past all checks and returns true — `domainFronted = true`. Without an
+explicit IP guard, the bypass fix (`HTTP_DOMAIN_FRONTING_BYPASSED`) would fire
+for legitimate IP-direct connections.
+
+The guard must be added explicitly in `runRequestHeader()` before setting the
+flag:
 
 ```cpp
-const auto &sni = m_nsession.frontConn()->getSslSni();
-if (!sni.empty()
-    && !ns_netutil_is_ip_addr(sni.c_str(), nullptr)
-    && sni != destinfo->domain) {
-    // domain fronting in bypass path — re-evaluate policy
+if (domainFronted &&
+    isPolicyBypass(DOMAIN_FRONTING) &&
+    !ns_netutil_is_ip_addr(m_nsession.frontConn()->getSslSni().c_str(), nullptr)) {
+    // check tenant exception list, then set HTTP_DOMAIN_FRONTING_BYPASSED
 }
 ```
+
+This is verified against `detectDomainFronting()` source (line 1077–1197 of
+`HttpRequestEngine.cpp`): no `ns_netutil_is_ip_addr` guard exists there.
 
 ---
 

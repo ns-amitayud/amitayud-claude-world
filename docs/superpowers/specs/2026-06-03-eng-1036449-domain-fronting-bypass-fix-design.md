@@ -232,8 +232,15 @@ std::string detectedHost;
 domainFronted = detectDomainFronting(
     ..., domainFrontingFlags, detectedHost);
 
+// IP-in-SNI guard: detectDomainFronting() does NOT exclude the case where
+// SNI is a raw IP (e.g., SNI=1.2.3.4, Host: example.com). That is legitimate
+// HTTP/1.1 behavior, not domain fronting. Without this guard, the bypass fix
+// would fire for IP-direct connections. Verified: no ns_netutil_is_ip_addr
+// check exists in detectDomainFronting() (HttpRequestEngine.cpp:1077-1197).
+const auto &sni = m_nsession.frontConn()->getSslSni();
 if (domainFronted &&
     isPolicyBypass(NetLayerPolicyCfg::DOMAIN_FRONTING) &&
+    !ns_netutil_is_ip_addr(sni.c_str(), nullptr) &&
     ::domain_fronting_bypass_fix::globalcfg::enabled() &&
     m_hsession.m_newConfig->domain_fronting_bypass_fix().enabled()) {
     std::string tenantId;
@@ -323,6 +330,12 @@ two-level gate pattern.
    tenant exception list, `HTTP_DOMAIN_FRONTING_BYPASSED` is not set and old behavior
    is preserved.
 
+4. **IP-in-SNI connections are excluded.** When the SNI field contains a raw IP address
+   (e.g., `SNI = 1.2.3.4`, `Host: example.com`), `HTTP_DOMAIN_FRONTING_BYPASSED` is
+   not set. `detectDomainFronting()` does not perform this exclusion — the guard
+   `!ns_netutil_is_ip_addr(sni.c_str(), nullptr)` is added explicitly in
+   `runRequestHeader()` before setting the flag.
+
 4. DNS failure in the bypass path always results in connection teardown, regardless of
    `defer-dns-error` configuration.
 
@@ -359,6 +372,7 @@ two-level gate pattern.
 | `DomainFrontingBypass_StagedConfigOff_OldBehavior` | Global staged config disabled | SNI IP used (old behavior) |
 | `DomainFrontingBypass_TenantFlagOff_OldBehavior` | Per-tenant flag disabled | SNI IP used (old behavior) |
 | `DomainFrontingBypass_GlobalException_NotTriggered` | SNI in global exception list | `detectDomainFronting()` returns false, flag not set |
+| `DomainFrontingBypass_IpInSni_NotTriggered` | SNI=1.2.3.4, Host=example.com, Bypass policy | Flag not set — legitimate IP-direct connection |
 | `DomainFrontingBlock_Unchanged` | Block policy configured | Existing block behavior unchanged |
 
 **Regression:** All existing `detectDomainFronting` and `DomainFronting*` tests must
