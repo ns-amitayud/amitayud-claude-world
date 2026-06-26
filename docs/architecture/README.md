@@ -210,3 +210,38 @@ Each relevant page entry in the markdown report:
 
 - ENG-978048 — the investigation that prompted this discussion
 - [New Hire Guide — Data Path](https://netskope.atlassian.net/wiki/spaces/DP/pages/3407972646/New+Hire+Guide+-+Data+Path)
+
+---
+
+## Coverage Map
+
+This table is the **ground truth of what we know vs. don't know**. Blank cells are blind spots — the next investigation on that path will start from scratch. Fill them here after each new finding.
+
+### Traffic Paths
+
+| Path | Topology documented | Component docs | Known failure modes | Last updated |
+|---|---|---|---|---|
+| **EPoT / Legacy IPsec** | ✅ [epot-legacy-ipsec.md](traffic-paths/epot-legacy-ipsec.md) | Partial (ProxyLB, dppool) | Partial (SYN drop, CONN info drop — PE root cause open) | 2026-06-26 |
+| **GRE access** | ❌ | ❌ | ❌ | — |
+| **NSClient DTLS (SWG)** | ❌ | ❌ | ❌ | — |
+| **Explicit proxy (direct)** | ❌ | ❌ | ❌ | — |
+| **Lightning VPP chain** | ❌ | ✅ [nsproxy-pod-lifecycle.md](nsproxy-pod-lifecycle.md) | Partial (etcd, halbagent, watchdog) | 2026-04-23 |
+
+### Components
+
+| Component | Doc | Coverage | Gaps | Last updated |
+|---|---|---|---|---|
+| ipsecgw (strongSwan, xfrm, DHCP) | ❌ | — | Full internals unknown | — |
+| ProxyLB fleet (aadpproxylb0N) | ✅ [nslb-proxylb.md](components/nslb-proxylb.md) | Observed behavior only | Internal forwarding mechanism; why drops are asymmetric | 2026-06-26 |
+| dppool / nsproxy :8024 (EPoT/GRE) | ✅ [dppool-nsproxy.md](components/dppool-nsproxy.md) | Listener config, SO_REUSEPORT, sysctls, accept() path | CONN info parsing code path | 2026-06-26 |
+| dpsvclb (Arista switch) | ❌ | — | Role unclear; often confused with ProxyLB | — |
+| nsproxy-pod-lifecycle (Lightning) | ✅ [nsproxy-pod-lifecycle.md](nsproxy-pod-lifecycle.md) | Startup, etcd, healthcheck, watchdog | halbagent source; double-restart root cause | 2026-04-23 |
+| NSLB (dppool load balancer) | ❌ | — | How dppool nodes are selected for new flows | — |
+| nsauth / authservice | ❌ | — | Full path from proxy redirect to auth completion | — |
+
+### How to Use This Map
+
+- **Starting a new investigation:** check if the traffic path is documented. If yes, read the topology doc before grepping code — it will tell you which hop to look at and what sysctl/protocol facts prevent certain failure modes.
+- **After an investigation:** update the relevant doc with new findings. Add a row to "Known failure modes" if a new bug pattern emerged. Update the coverage map table with the date.
+- **Proposing a new doc:** add a row with ❌ to mark the gap, then create the file.
+
