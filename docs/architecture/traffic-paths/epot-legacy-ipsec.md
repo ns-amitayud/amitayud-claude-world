@@ -1,6 +1,6 @@
 # EPoT / Legacy IPsec Traffic Path
 
-> **Status:** Updated 2026-06-26 — §4.3 drop location confirmed to ToR fabric; §5.2 CONN info drop mechanism confirmed by full 8-node pcap analysis; §7 diagnostic checklist updated with ECMP-sum step and TX-clean verification; §8 failure modes updated with confirmed root cause.
+> **Status:** Updated 2026-06-26 — §4.3 drop location confirmed to ToR fabric; §5.2 CONN info drop mechanism confirmed by full 8-node pcap analysis; §7 observability map and blind spots added (new); §8 diagnostic checklist updated with ECMP-sum step and TX-clean verification; §9 failure modes updated with confirmed root cause.
 > **Reviewer:** ProxyLB internal forwarding mechanism (§4.2) and load distribution algorithm still need PE team confirmation. ipsecgw xfrm/DHCP details need confirmation from IPsec team.
 > **Update trigger:** After any EPoT-path bug fix, ProxyLB architecture change, or CONN info protocol change.
 
@@ -282,7 +282,58 @@ Note: `backlog=1024` in config. The `ss -tlnp` on dppool showed `Send-Q=16384` �
 
 ---
 
-## 7. Diagnostic Checklist (EPoT-specific)
+## 7. Observability Map and Blind Spots
+
+Understanding where you have visibility — and where you don't — before starting an investigation prevents wasted effort and misdirected hypotheses.
+
+```
+ipsecgw NIC egress        ToR switch          ProxyLB NIC ingress
+      │                       │                       │
+  ┌───▼──────────────────┐    │    ┌──────────────────▼───┐
+  │  Linux kernel        │    │    │  Linux kernel         │
+  │  TX counters ✅      │    │    │  RX counters ✅       │
+  │  eBPF probes ✅      │    │    │  eBPF probes ✅       │
+  │  conntrack ✅        │    │    │  conntrack ✅         │
+  └──────────────────────┘    │    └──────────────────────┘
+                              │
+                    ┌─────────▼──────────┐
+                    │  ToR switch fabric  │
+                    │  ❌ NO LINUX TOOLS  │
+                    │  ❌ NO eBPF         │
+                    │  ❌ NO conntrack    │
+                    │  ✅ Switch port     │
+                    │     drop counters  │
+                    │  ✅ sFlow/NetFlow   │
+                    │     (if configured)│
+                    └────────────────────┘
+```
+
+**The ToR fabric is the observability blind spot for EPoT.** Linux tools (eBPF, conntrack, `ip -s link`) can confirm that a packet left ipsecgw's NIC and that it never arrived at any ProxyLB NIC — but they cannot see what happened in between. That segment requires network/infra team access to the switch itself.
+
+### What each tool can and cannot tell you
+
+| Tool | What it sees | What it cannot see |
+|---|---|---|
+| `ip -s link` TX counters on ipsecgw | Packet was handed to NIC driver | Whether NIC actually put it on the wire |
+| ipsecgw pcap (`tcpdump -i bond0.400`) | Packet seen by kernel before NIC | Same gap |
+| eBPF / `pwru` on ipsecgw | Which kernel function last touched packet | Anything past the NIC |
+| ProxyLB pcap (all 8 nodes) | Packet arrived at LB NIC | Anything that happened in the fabric |
+| `conntrack` on ipsecgw | TCP state of tunnel-side connections | Data-packet drops on established connections |
+| nsproxy DAPII logs / `trid` | Everything after `accept()` completes | Packets dropped before the TCP handshake completes at nsproxy |
+| **ToR switch port counters** | **Per-port drop/error counts** | **Per-flow detail (need sFlow/NetFlow for that)** |
+| **sFlow / NetFlow** | **Per-flow delivery between fabric segments** | **Packet content / payload** |
+
+### First escalation to network/infra team
+
+When ipsecgw TX is clean and ProxyLB nodes show no RX of the packet, **do not start a multi-point pcap campaign first**. Start with this request to the network/infra team — it takes 2 minutes and either confirms or rules out the fabric as the drop point:
+
+> "Please check ToR switch port drop counters for the uplink ports connected to `ipsecgw0N.<pop>` — specifically input/output error and drop counters on the switch ports facing that host's bond slave interfaces (`eth0`, `eth1`). We are seeing first-data-packet drops on established TCP connections that exit ipsecgw clean but never arrive at the ProxyLB nodes."
+
+If the switch shows incrementing drop counters on those ports during the incident window, the fabric is confirmed as the drop source. If counters are clean, escalate further into the fabric (spine switches, inter-rack links).
+
+---
+
+## 8. Diagnostic Checklist (EPoT-specific)
 
 When investigating EPoT latency or connection stalls, run these checks **in this order** before forming a hypothesis:
 
@@ -356,7 +407,7 @@ sudo netstat -s | grep "listen queue" # low rate (not spike)
 
 ---
 
-## 8. Known Failure Modes (EPoT-specific)
+## 9. Known Failure Modes (EPoT-specific)
 
 | Failure Mode | Symptom | Root Cause | Who investigates |
 |---|---|---|---|
@@ -366,7 +417,7 @@ sudo netstat -s | grep "listen queue" # low rate (not spike)
 
 ---
 
-## 9. What This Path Shares With GRE
+## 10. What This Path Shares With GRE
 
 The GRE access path (GRE Gateway) also terminates on nsproxy port 8024 (`gre-gateway` mode) via the same ProxyLB fleet. Many of the same diagnostic steps apply. The key difference: GRE uses a GRE tunnel for encapsulation rather than IPsec ESP, and the customer-side hardware is typically a data-center router rather than a VPN gateway.
 
