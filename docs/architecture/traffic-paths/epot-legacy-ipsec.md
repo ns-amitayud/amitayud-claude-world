@@ -1,7 +1,7 @@
 # EPoT / Legacy IPsec Traffic Path
 
-> **Status:** First draft 2026-06-26 — authored from ENG-1072419 investigation (Atos/Eviden Germany, TID 24616, FRA1), Miroslaw Pabian's Jun 26 session PDF, and Jira comment thread.
-> **Reviewer:** PE team review required for ProxyLB internals (§4) and CONN info protocol (§5). ipsecgw xfrm/DHCP details need confirmation from IPsec team.
+> **Status:** Updated 2026-06-26 — §4.3 drop location confirmed to ToR fabric; §5.2 CONN info drop mechanism confirmed by full 8-node pcap analysis; §7 diagnostic checklist updated with ECMP-sum step and TX-clean verification; §8 failure modes updated with confirmed root cause.
+> **Reviewer:** ProxyLB internal forwarding mechanism (§4.2) and load distribution algorithm still need PE team confirmation. ipsecgw xfrm/DHCP details need confirmation from IPsec team.
 > **Update trigger:** After any EPoT-path bug fix, ProxyLB architecture change, or CONN info protocol change.
 
 ---
@@ -47,10 +47,14 @@ ipsecgw0N.fra1.nskope.net  (e.g. 163.116.178.38)   [§3]
   │  First data packet = [215 B CONN info][HTTP CONNECT ...]   [§5]
   │  CONN info is sent ONCE, never retransmitted
   │
-  │  ◄══ PACKET DROPS OBSERVED HERE (ENG-1072419) ══►
-  │      Affected: LB06 and LB07 in FRA1
-  │      SYN drops  → 1s+2s+4s retransmit backoff → 7 s latency
+  │  ◄══ PACKET DROPS CONFIRMED HERE (ENG-1072419) ══►
+  │      Location: ToR switch / fabric between ipsecgw bond0 and aadpproxylb ingress
+  │      ipsecgw bond TX: clean (exits both bond slaves, TX drops = 0 on all interfaces)
+  │      aadpproxylb nodes: clean (zero KVM steal, zero NIC errors across all 8 nodes)
+  │      Fabric between them: transient first-data-packet drops
   │      CONN info drops → permanent stall (browser timeout, no error)
+  │      NOTE: early "SYN drop" theory was an ECMP misread — ipsecgw
+  │            distributes across all 8 LBs; summing all 8 = 100% accounted for
   │
   ▼
 ProxyLB fleet  aadpproxylb01–08.fra1.nskope.net     [§4]
@@ -152,24 +156,34 @@ In the ProxyLB pcap, every packet appears **twice** in rapid succession (same ti
 ```
 This is an **expected artifact** of ECMP or bonding on the LB node — not packet corruption or retransmission. Every forwarded packet is seen twice on the capture interface.
 
-### 4.3 Failure mode: packet loss between ipsecgw and ProxyLB
+### 4.3 Failure mode: packet loss in ToR fabric between ipsecgw and ProxyLB
 
-In ENG-1072419, the drops were localized to packets that never arrived at any of the 8 ProxyLB nodes:
-- SYN for a connection: 5 retransmits sent by ipsecgw, 5 absent from all 8 ProxyLB captures; only the 6th SYN arrived
-- CONN info packet: never arrived at any ProxyLB; only the retransmitted HTTP CONNECT arrived
+**Root cause confirmed (ENG-1072419, Abdul Hameed Sardar Ali, 2026-06-26):**
 
-The drop therefore occurs **between ipsecgw and the ProxyLB** — in the network path (bond0.400 → GW 10.178.6.1 → LB ingress). The root cause of these drops is assigned to the PE team as of 2026-06-26.
+The drop occurs in the **ToR switch / fabric** between ipsecgw06's bond0 egress and the aadpproxylb ingress. Evidence:
+
+- ipsecgw bond TX confirmed clean: CONN info packet exits on **both bond slaves** (confirmed in ipsecgw06 pcap); `net_drop_out = 0`, `net_err_out = 0` on bond0, bond0.400, bond0.600, eth0, eth1 throughout incident window.
+- All 8 aadpproxylb nodes confirmed clean: zero KVM CPU steal (<0.02%), zero NIC errors. CONN info absent from **all 8** LB pcaps simultaneously.
+- HTTP CONNECT sent on the same 5-tuple **250ms later** arrives fine — ruling out a hard path failure. This is a transient fabric issue affecting only the first data packet.
+- 18 affected connections confirmed on VDI pcap — not destination-specific (bing.com, cnn.com, login.live.com, office.com, golem.de, etc.).
+
+**ECMP clarification:** The early analysis identified drops to "LB06 and LB07" and "SYN drops." This was an artefact of comparing ipsecgw's total SYN count against individual LB nodes. ipsecgw uses ECMP and distributes ~130–146 connections per LB node. Summing all 8 nodes accounts for 100% of ipsecgw's SYNs — there were **zero SYN drops**. The actual failure was CONN info drops only.
+
+**Next step for network/infra team:** ToR switch port error/drop counters for ipsecgw uplink ports; fabric interface stats on both bond slave ports of ipsecgw.
 
 ### 4.4 What is known vs unknown
 
 | Aspect | Status |
 |---|---|
 | Physical location in path | Confirmed (ipsecgw → aadpproxylb0N → dppool) |
+| Drop location | Confirmed: ToR fabric between ipsecgw bond0 and aadpproxylb ingress |
+| ipsecgw TX | Confirmed clean (bond TX drops = 0, exits both bond slaves) |
+| aadpproxylb nodes | Confirmed clean (zero steal, zero NIC errors) |
 | Software/OS | Linux (DLT=LINUX_SLL confirmed) |
 | Internal forwarding mechanism | Unknown — needs PE team input |
-| Whether it maintains per-flow state | Unknown — whether CONN info is processed here or passed through opaquely |
-| Why drops are localized to LB06/LB07 | Under investigation |
-| Load distribution algorithm | Unknown |
+| Whether it maintains per-flow state | Unknown — CONN info appears passed through opaquely to dppool |
+| Why transient fabric drops affect first-data-packet specifically | Under investigation by network/infra team |
+| Load distribution algorithm | ECMP confirmed (uniform ~130–146 connections per LB node) |
 
 ---
 
@@ -286,16 +300,38 @@ Capture **simultaneously** on:
 - All 8 ProxyLB nodes (`tcpdump -i any port 8024`)
 - dppool (`tcpdump -i lo port 8024`)
 
-For each affected flow (identified by src port from client pcap):
+**ECMP check first — always sum all 8 LBs before concluding SYN drops:**
 ```bash
-# On ProxyLB nodes — check which LB saw the packet
+# Sum SYNs across all 8 LBs and compare to ipsecgw total
 for lb in {1..8}; do
-  tcpdump -r aadpproxylb0${lb}.fra1:/tmp/<capture>.pcap port <src_port>
+  echo -n "LB$lb: "
+  tcpdump -r aadpproxylb0${lb}.<pop>:/tmp/<capture>.pcap \
+    'tcp[tcpflags] & tcp-syn != 0' 2>/dev/null | wc -l
+done
+# If sum ≈ ipsecgw total → zero SYN drops (ECMP distributing correctly)
+# Never compare ipsecgw total to a single LB — produces spurious ~87% drop rate
+```
+
+For CONN info drop confirmation (search by affected src port):
+```bash
+for lb in {1..8}; do
+  echo "=== LB $lb ==="
+  tcpdump -r aadpproxylb0${lb}.<pop>:/tmp/<capture>.pcap port <src_port>
 done
 ```
 
-A packet visible at ipsecgw but absent from all 8 ProxyLB nodes = drop is **between ipsecgw and ProxyLB**.
+A CONN info drop: 215-byte segment absent from **all 8** LBs; HTTP CONNECT present on one LB.
 A packet visible at one ProxyLB but absent at dppool = drop is **between ProxyLB and dppool** (rare).
+
+**Verify ipsecgw TX is clean (not the drop source):**
+```bash
+ip -s link show bond0 | grep -A2 "TX:"
+ip -s link show bond0.400 | grep -A2 "TX:"
+ip -s link show eth0 | grep -A2 "TX:"
+ip -s link show eth1 | grep -A2 "TX:"
+# All "dropped" values should be 0
+# If 0 → drop is in the ToR fabric downstream of ipsecgw
+```
 
 ### Step 3: Distinguish SYN drop from CONN info drop
 
@@ -324,9 +360,9 @@ sudo netstat -s | grep "listen queue" # low rate (not spike)
 
 | Failure Mode | Symptom | Root Cause | Who investigates |
 |---|---|---|---|
-| SYN drops between ipsecgw and ProxyLB | 1–7 s initial connect delay; SYN retransmits visible at ipsecgw, absent at ProxyLB | Unknown as of 2026-06-26; packet loss in ipsecgw→LB network segment | PE team |
-| CONN info drop between ipsecgw and ProxyLB | Browser timeout on specific resources; HTTP CONNECT retransmitted but never completes | Same underlying drop — but consequence is permanent stall not retryable delay | PE team |
-| Both affect LB06/LB07 specifically | Localized to specific ProxyLB nodes | Possible: asymmetric routing, NIC issue, or switch port problem on those nodes | PE / Ops |
+| CONN info drop in ToR fabric | Browser timeout on specific resources; HTTP CONNECT retransmitted but never completes; dppool SACK shows gap {1:215} | Transient first-data-packet drop in ToR fabric between ipsecgw bond0 and aadpproxylb ingress. ipsecgw TX clean; LB nodes clean. | Network/infra team — ToR switch port counters |
+| Client-side abort (Pattern B) | 45 s gap after CONN info ACKed, then FIN with no HTTP CONNECT | VDI or Fortigate closes connection before sending HTTP CONNECT | Customer-side (VDI/firewall timeout config) |
+| ~~SYN drops~~ | ~~1–7 s delay~~ | **Not a real failure mode** — early analysis was an ECMP misread. Summing all 8 LBs accounts for 100% of ipsecgw SYNs. | N/A |
 
 ---
 
@@ -359,7 +395,8 @@ The GRE access path (GRE Gateway) also terminates on nsproxy port 8024 (`gre-gat
 | ipsecgw06.rtf (attached to ticket) | Bond, conntrack, routing, MTU, softnet stats |
 | dpsvclb0102fra1.rtf (attached to ticket) | Confirmed Arista switch — ruled out as ProxyLB |
 | claude-session-73f92c26.txt (attached) | Pcap analysis: 6 SYN sent, only 6th received; 116µs transit time |
-| Miroslaw Pabian's session PDF (Jun 26) | Identified aadpproxylb0N fleet; CONN info protocol; two-issue framing; root cause localization |
+| Miroslaw Pabian's session PDF (Jun 26) | Identified aadpproxylb0N fleet; CONN info protocol; two-issue framing; initial root cause localization to ipsecgw→LB segment |
 | Harsh Pandey's Jira comments (Jun 26) | tcp_syncookies=1; no Prism anomaly; nsproxy ruled out; redirected to IPsec team |
+| Abdul Hameed Sardar Ali's Jira comment (Jun 26) | Full 8-node LB pcap analysis; confirmed zero SYN drops (ECMP misread corrected); confirmed 18 CONN info drops (Pattern A); confirmed 7 client-side aborts (Pattern B); pinpointed drop to ToR fabric between ipsecgw bond0 and aadpproxylb ingress; confirmed ipsecgw TX clean; confirmed LB nodes clean |
 | Parth Varma's Jira comment | Confirmed Legacy IPsec (not VPP) |
 | Deepak Kumar's Jira comment | Service chain output (no qos/ctap/adapter); confirmed cfw not in play |
