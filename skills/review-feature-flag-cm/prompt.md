@@ -74,12 +74,14 @@ From `linked_issues`, identify the related ENG ticket (key starting "ENG-", dire
 
 Extract from CM:
 - `customer_name`, `tenant_id`, `home_pop` from inputs JSON in description
-- Maintenance command (curl POST) from execution log in comments
-- Pre-maintenance stdout (state before change) from execution log
-- Post-execution verification output (state after change) from execution log
-- Pre-maintenance validation status (PASSED/FAILED)
-- Verification validation status (PASSED/FAILED)
-- Feature flag name (from `Extracted feature flag:` line in execution log)
+- Current Jira status (e.g. Draft, Needs Peer Review, Change Approved, Change In Progress, Change Closed)
+- Maintenance command (curl POST) from Maintenance Tasks field or execution log in comments
+- Pre-maintenance stdout (state before change) from Pre-maintenance Tasks field or execution log
+- Post-execution verification output (state after change) from execution log, if present
+- The bot-posted "Maintenance Execution Report" comment, if present — contains `Pre-maintenance Validation: PASSED/FAILED` and `Verification Validation: PASSED/FAILED` lines
+- Feature flag name (from `Extracted feature flag:` line in execution log, or from the field descriptions)
+
+**Execution-report lifecycle:** this automation only posts the "Maintenance Execution Report" comment (with the PASSED/FAILED lines) *after* the CM is approved and actually run. A CM sitting at Draft/Needs Peer Review/Change Approved with no such comment yet is normal and expected — it has not been executed, not failed. Only treat validation as failed when the report comment exists and says FAILED, or when the CM is at Change In Progress/Change Closed with no report comment at all (execution should have logged one by then).
 
 Extract from ENG ticket:
 - Tenant name, tenant ID, tenant URL, home POP from description
@@ -91,10 +93,12 @@ Apply all six checks to every CM regardless of flag type:
 
 1. **Customer name match** — Does CM `customer_name` match tenant name or URL in the ENG ticket?
 2. **Tenant ID + home POP match** — Do CM and ENG ticket agree on both?
-3. **Request vs deployed** — Does what the ENG ticket explicitly requested match what the maintenance command executed?
-4. **Pre-maintenance validation** — Is status PASSED?
-5. **Post-execution verification** — Is status PASSED? Does verified final state match expected?
-6. **No unexpected side effects** — Is existing config fully preserved? Is only the requested change applied?
+3. **Request vs deployed** — Does what the ENG ticket explicitly requested match what the maintenance/planned command says (executed or not)?
+4. **Pre-maintenance validation** — PASSED if the report comment says so, or if no report comment exists yet (not-yet-executed — mark N/A, not a failure). FAILED only if the report comment explicitly says FAILED.
+5. **Post-execution verification** — Same rule as #4: N/A if not yet executed, PASSED/FAILED from the report comment once it exists.
+6. **No unexpected side effects** — Based on the pre-maintenance snapshot vs. the maintenance command (or, once executed, vs. the verification output): is existing config fully preserved, is only the requested change applied?
+
+Use ⏳ (not ❌) for checks 4-5 when the CM hasn't executed yet — an N/A is not a fail. Only ❌ when there is a report comment and it says FAILED.
 
 ### Flag-specific checklist
 
@@ -105,9 +109,8 @@ Identify the flag from the execution log (`Extracted feature flag:` line) and ap
 Determine if this is **first-time enablement** by checking whether pre-maintenance stdout shows no existing `http2` config (null or absent).
 
 If **first-time enablement**:
-- Check: `use-global-config` is present and set to `false` in the executed command
-- Check: `dynamic-alpn-detection` is present and set to `false` in the executed command
-- Flag as NEEDS ATTENTION if either is missing or not `false`
+- Check: if `use-global-config` and/or `dynamic-alpn-detection` are present in the executed command, they are set to `false` (a present-but-non-`false` value is a real defect — flag NEEDS ATTENTION).
+- If either field is *absent* from the command, this is **not** a defect by itself — precedent (e.g. CM-141717) shows Ursa's own default enablement omits both fields and defaults apply, and that pattern has been reviewed and approved before. Note it (non-blocking): "`use-global-config`/`dynamic-alpn-detection` not explicitly set — relies on defaults; both explicit-false and omitted are established patterns, confirm which the reviewer prefers."
 
 If **adding to existing config**:
 - Check: all domains present in pre-maintenance state are preserved in post-execution verification output
@@ -146,16 +149,16 @@ Present the result for this CM as:
 ✅/❌ Customer name match — [detail]
 ✅/❌ Tenant ID + POP match — [detail]
 ✅/❌ Request vs deployed — [detail]
-✅/❌ Pre-maintenance validation — PASSED/FAILED
-✅/❌ Post-execution verification — PASSED/FAILED
+✅/❌/⏳ Pre-maintenance validation — PASSED/FAILED/⏳ not yet executed
+✅/❌/⏳ Post-execution verification — PASSED/FAILED/⏳ not yet executed
 ✅/❌ No unexpected side effects — [detail]
 
 ### Flag-specific checks (`<flag-name>`)
 ✅/❌ [check] — [detail]
 ✅/❌ [check] — [detail]
 
-**Notes:** [anything worth flagging that is not a hard fail, or "None"]
+**Notes:** [anything worth flagging that is not a hard fail — including non-blocking precedent notes — or "None"]
 **Overall: LGTM** / **Overall: NEEDS ATTENTION**
 ```
 
-Use ✅ for pass, ❌ for fail. If a flag-specific section has no applicable checks, omit it.
+Use ✅ for pass, ❌ for fail, ⏳ for not-yet-applicable (CM not yet executed). If a flag-specific section has no applicable checks, omit it. A ⏳ never by itself causes an "Overall: NEEDS ATTENTION" verdict — only an actual ❌ does.
