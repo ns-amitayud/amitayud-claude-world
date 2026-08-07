@@ -114,6 +114,11 @@ If **first-time enablement**:
 
 If **adding to existing config**:
 - Check: all domains present in pre-maintenance state are preserved in post-execution verification output
+  — EXCEPTION: an entry with a literal `*.` prefix (e.g. `*.example.com`) is a non-functional no-op in
+  the http2 domain matcher (suffix-matching trie, no glob support — the `*` is stored as a literal
+  character and never matches a real hostname). Removing such a dead wildcard entry and replacing it
+  with the bare apex form (`example.com`) is a coverage *expansion* (apex + all subdomains), not a
+  regression — do not flag this as an unexpected side effect. Precedent: CM-283328.
 - Check: `use-global-config` and `dynamic-alpn-detection` values are unchanged from pre-maintenance state
 - Note (non-blocking) if `use-global-config` is absent from the config
 
