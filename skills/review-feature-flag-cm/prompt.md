@@ -2,7 +2,7 @@
 name: review-feature-flag-cm
 description: Review feature-flag automation CM tickets from Jira. Applies generic and flag-specific checklists. Use when asked to review feature flag CMs, or invoked as /review-feature-flag-cm [CM-KEY]. With no argument, fetches the full pending-review queue. With a CM key, reviews that single ticket.
 allowed-tools:
-  - Bash(~/.claude/plugins/cache/netskope/eng-skills/*/skills/jira/scripts/jira *)
+  - Bash(~/.claude/plugins/cache/netskope/eng-skills/1.6.2/skills/jira/scripts/jira *)
   - AskUserQuestion
 ---
 

@@ -1,3 +1,8 @@
+---
+name: pr-reply-ad-hoc
+description: Draft replies to unresolved review comments on a given PR URL within the netSkope GitHub organization. Acknowledges fixes, pushes back with technical justification, or asks clarifying questions; presents drafts for approval rather than posting directly. Use when invoked as /pr-reply-ad-hoc <URL>.
+---
+
 Respond to existing review comments on the given PR URL within the netSkope GitHub organization.
 
 Steps:

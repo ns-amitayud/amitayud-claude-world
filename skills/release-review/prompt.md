@@ -1,3 +1,8 @@
+---
+name: release-review
+description: Draft release-readiness answers for NSProxy tickets in a release CSV, get human approval, write approved answers back into the CSV, and convert to XLSX for upload. Use when invoked as /release-review [--limit N] <csv_path>.
+---
+
 # release-review skill
 
 Use this skill when the user invokes `/release-review [--limit N] <csv_path>`.

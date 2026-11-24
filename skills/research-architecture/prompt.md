@@ -3,7 +3,7 @@ name: research-architecture
 description: Use when an engineer needs to understand how an NSProxy/dataplane component currently works before starting a feature, bug investigation, or design discussion — produces a codebase-corroborated architecture doc in docs/architecture/ by combining source code reading with Confluence BFS crawl results.
 allowed-tools:
   - Bash(python3 ~/amitayud-claude-world/scripts/confluence-bfs-crawler.py *)
-  - Bash(~/.claude/plugins/cache/netskope/eng-skills/*/skills/confluence/scripts/confluence *)
+  - Bash(~/.claude/plugins/cache/netskope/eng-skills/1.6.2/skills/confluence/scripts/confluence *)
   - Read
   - Bash(grep *)
   - Bash(find *)
