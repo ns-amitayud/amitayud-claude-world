@@ -165,6 +165,42 @@ Config: defer-dns-error (global flag AND per-tenant flag both must be true)
                       explicit proxy has CONNECT-resolved IP at Stage 0, so this path
                       is only reached in transparent proxy with no prior resolution)
 
+### Complete DNS resolution scenario matrix (4 parameters × 8 leaf cases)
+
+The four parameters that determine the outcome of a connection when DNS resolution is
+involved:
+
+1. **SSL DNS**: success / failure
+2. **F2P (Forward-to-Proxy)**: matches / no match
+3. **AppModule DNS**: success / failure  (only relevant when SSL DNS failed)
+4. **defer-dns-error**: enabled / disabled (only relevant when AppModule DNS also failed)
+
+```
+SSL DNS success, F2P no match         → Good to go (IP available, policy evaluated normally)
+SSL DNS success, F2P matches          → Good to go (IP available, F2P chain proxy handles it)
+
+SSL DNS failure, F2P no match:
+  AppModule DNS success               → Good to go (yet to be integration-tested)
+  AppModule DNS failure:
+    defer-dns-error enabled           → Teardown (sendErrHtmlPageForDnsFailure)
+    defer-dns-error disabled          → Teardown (sendErrHtmlPageForDnsFailure)
+
+SSL DNS failure, F2P matches:
+  AppModule DNS success               → Good to go (yet to be integration-tested)
+  AppModule DNS failure:
+    defer-dns-error enabled           → F2P works (domain-based policy; nullptr safe)
+    defer-dns-error disabled          → Teardown  ← verified from dnsReplyOnFailure()
+                                                    line 3573: !deferDnsErrorTenant fires
+                                                    before setupBack()/F2P can intercept
+```
+
+**The verified `?` case** (SSL fail + F2P matches + defer-dns-error disabled + AppModule
+DNS also fails): `dnsReplyOnFailure()` checks `defer-dns-error` first and tears down
+immediately via `sendErrHtmlPageForDnsFailure()`. F2P matching happens inside
+`setupBack()` — it never gets a chance to intercept because the connection is torn down
+before `setupBack()` is reached. F2P presence does not change the teardown outcome when
+`defer-dns-error` is disabled.
+
 Known gap in failure handling (row 4b of behaviour matrix):
   When F2P policy is present AND defer-dns-error is disabled, the ADR specifies that
   get_dstip() should return nullptr regardless — nullptr is safe because F2P routing

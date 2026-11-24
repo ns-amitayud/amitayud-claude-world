@@ -693,3 +693,48 @@ must be resolved first.
 Not an acceptable end state. The existing blocking path already provides
 visibility via transaction events. Option 3 is not implemented as a permanent
 path.
+
+---
+
+## Process Lesson — Product Semantics Must Be Confirmed Before Design (2026-06-09)
+
+**Recorded after ENG-1036449 / PR #15237.**
+
+### What happened
+
+ENG-1036449 implemented the Bypass path fix assuming "Bypass = enforce the HTTP Host
+header destination (connect to Host domain's own IP, evaluate policy against true
+destination)." This interpretation was inferred from reading the code and from the
+logical contrast with Block mode. No PM confirmation was sought before the design was
+written or the implementation was done. The question was raised only after PR #15237 was
+opened.
+
+### The two questions sent to PM (pending as of 2026-06-09)
+
+**Q1:** What is the intended behavior of "Bypass" in the face of domain fronting?
+- Working definition A (implemented): Bypass = do not terminate, but enforce the HTTP
+  Host header destination. Connect to Host domain's own IP. Policy evaluated against
+  true destination.
+- Alternative B: Bypass = allow domain fronting to succeed transparently. SNI-routed
+  IP is fine. Proxy stays out of the way.
+
+**Q2:** Should the tenant exception list apply in Bypass mode?
+Under definition A, exception list has no natural meaning in Bypass mode — destination
+enforcement should apply unconditionally. Under definition B, the question is moot.
+
+### Implementation consequence
+
+If PM confirms definition A: remove the exception list check from the Bypass path in
+`HttpRequestEngine.cpp` `runRequestHeader()` (lines 1792-1796 at time of writing).
+If PM confirms definition B: the entire ENG-1036449 fix is misaligned and needs rethinking.
+
+### Rule
+
+**Before writing any design that involves policy enforcement options (Block/Bypass,
+Allow/Deny, Strict/Permissive), confirm the meaning of each option with PM explicitly.**
+Do not infer product semantics from code behavior. Record the confirmed definition in
+the spec under a "Product Semantics" section before writing any design contracts.
+
+This rule is also recorded in:
+- `~/.claude/skills/verification-before-completion/SKILL.md` (Additional Rule 6)
+- The brainstorming skill checklist (to be added when plugin supports user extensions)

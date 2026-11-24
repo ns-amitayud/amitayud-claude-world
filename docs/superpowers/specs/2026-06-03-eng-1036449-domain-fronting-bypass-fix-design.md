@@ -3,7 +3,7 @@
 **Jira:** ENG-1036449
 **Date:** 2026-06-03
 **Author:** Amitayu Das
-**Status:** Draft
+**Status:** Delivered (PR #15237, implementation complete)
 **Related specs:**
 - `2026-04-14-nplan6618-architectural-decisions.md` — ADR Point 9: domain fronting gap analysis
 - `2026-05-19-eng-970460-geoip-consolidation-design.md` — Known Gap #1: `ResolvedIpFromHttpHost` production
@@ -20,8 +20,15 @@ back connection uses the **SNI-resolved IP** (`allowed.com`'s IP) while carrying
 `Host: blocked.com`. The CDN at `allowed.com` routes internally to `blocked.com`. Domain
 fronting succeeds at the CDN level despite detection.
 
-Note: the **Block** path is already correct — `detectDomainFronting()` + `isPolicyBypass()`
-terminate the connection. ENG-1036449 fixes only the Bypass path.
+**Block path (already correct):** When policy is set to Block, `detectDomainFronting()`
+calls `sendDomainFrontingErrToFront()` and returns `NS_NBERR`, terminating the connection
+immediately. `updateNetSessionDestHostResolvedIp()` is never reached.
+
+**Bypass path (this fix):** When policy is set to Bypass, `detectDomainFronting()` detects
+the mismatch but does not terminate — execution falls through to
+`updateNetSessionDestHostResolvedIp()`. The three-condition guard in that function fires
+(SNI-resolved IP is non-empty), causing an early return with the stale IP in place.
+ENG-1036449 fixes this path.
 
 ### Root cause
 
@@ -58,7 +65,6 @@ causally coupled and cannot be separated.
 **In scope:**
 - Fix the Bypass path: clear stale SNI-resolved IP, set `blocked.com`'s IP via
   `setDestHostResolvedIp()` with `ipSource = ResolvedIpFromHttpHost = 8`
-- Respect tenant exception list in Bypass mode (currently skipped)
 - Produce `ResolvedIpFromHttpHost = 8` — closes ENG-970460 Known Gap #1
 - Staged config gate for deployment safety
 - DNS failure handling in bypass path
@@ -120,8 +126,8 @@ runRequestHeader()                      [state: HTTP_REQ_HDR]
   parseHeaders() — complete
   detectDomainFronting(... &detectedHost) → true    ← detectedHost = "blocked.com"
   isPolicyBypass(DOMAIN_FRONTING) → true
-  check tenant exception list for detectedHost       ← NEW
-    → not in list
+  check IP-in-SNI guard → SNI is a hostname, not IP  ← NEW
+  check staged config (global + per-tenant) → enabled ← NEW
   m_proxy.setFlag(HTTP_DOMAIN_FRONTING_BYPASSED)     ← NEW
   setState(HTTP_REQ_HDR_RESUME)         ← state transition unchanged
   returns NS_NBOK
@@ -163,31 +169,27 @@ runRequestModProcess()
 
 ---
 
-## Tenant Exception List Handling
+## Exception List Applicability
 
-`detectDomainFronting()` skips the tenant exception list check when
-`isPolicyBypass(DOMAIN_FRONTING)` is true (line 1161). This means in Bypass mode, a Host
-domain that is in the tenant exception list would trigger the bypass fix unnecessarily —
-the operator explicitly marked it as a known/trusted fronting.
+### Global exception list
+Checked inside `detectDomainFronting()` regardless of policy mode. If a domain matches
+the global exception list, `detectDomainFronting()` returns false and the bypass fix never
+fires. This is unchanged.
 
-The fix checks the tenant exception list explicitly before setting
-`HTTP_DOMAIN_FRONTING_BYPASSED`:
+### Tenant exception list — does not apply in Bypass mode
+`detectDomainFronting()` already skips the tenant exception list when
+`isPolicyBypass(DOMAIN_FRONTING)` is true (line 1161). The final implementation does
+**not** re-add a tenant exception list check in the Bypass path.
 
-```cpp
-if (domainFronted && isPolicyBypass(DOMAIN_FRONTING)) {
-    std::string tenantId;
-    bool tenantException = getTenantId(tenantId) &&
-        NsDomainFrontingExcep::checkTenantException(detectedHost, tenantId);
-    if (!tenantException) {
-        m_proxy.setFlag(AppModuleHttpProxy::HTTP_DOMAIN_FRONTING_BYPASSED);
-    }
-}
-```
+**Rationale (PM confirmed 2026-06-15; see Open Design Questions → Q2):** The exception
+list was designed exclusively for Block mode — "block domain fronting globally, except
+for these trusted domains." Under the confirmed semantics of Bypass (enforce HTTP Host
+destination unconditionally), there is nothing to except: destination enforcement applies
+to every domain in Bypass mode. The exception list is semantically incoherent in Bypass
+mode.
 
-`detectedHost` is obtained by adding it as an output parameter to `detectDomainFronting()`
-(see Code Changes). The global exception list is unchanged — it is already checked
-inside `detectDomainFronting()` regardless of policy setting, and if matched,
-`detectDomainFronting()` returns false so the bypass fix never fires.
+An earlier draft of this spec included a tenant exception list check in the Bypass path.
+That code was removed after PM confirmation.
 
 ---
 
@@ -243,12 +245,10 @@ if (domainFronted &&
     !ns_netutil_is_ip_addr(sni.c_str(), nullptr) &&
     ::domain_fronting_bypass_fix::globalcfg::enabled() &&
     m_hsession.m_newConfig->domain_fronting_bypass_fix().enabled()) {
-    std::string tenantId;
-    bool tenantException = getTenantId(tenantId) &&
-        NsDomainFrontingExcep::checkTenantException(detectedHost, tenantId);
-    if (!tenantException) {
-        m_proxy.setFlag(AppModuleHttpProxy::HTTP_DOMAIN_FRONTING_BYPASSED);
-    }
+    // Tenant exception list intentionally NOT checked here.
+    // Exception list has no meaning in Bypass mode — see Exception List
+    // Applicability section and Open Design Questions → Q2.
+    m_proxy.setFlag(AppModuleHttpProxy::HTTP_DOMAIN_FRONTING_BYPASSED);
 }
 ```
 
@@ -326,9 +326,10 @@ two-level gate pattern.
 2. `get_dstip()` returns `blocked.com`'s IP to the policy engine — policy is evaluated
    against the true destination, not the SNI domain.
 
-3. The tenant exception list is respected in Bypass mode: if Host domain is in the
-   tenant exception list, `HTTP_DOMAIN_FRONTING_BYPASSED` is not set and old behavior
-   is preserved.
+3. ~~The tenant exception list is respected in Bypass mode.~~ **Removed (2026-06-15,
+   confirmed by PM):** the exception list has no meaning in Bypass mode. Destination
+   enforcement applies unconditionally to all Bypass-mode domain fronting detections.
+   Exception list check removed from `runRequestHeader()`.
 
 4. **IP-in-SNI connections are excluded.** When the SNI field contains a raw IP address
    (e.g., `SNI = 1.2.3.4`, `Host: example.com`), `HTTP_DOMAIN_FRONTING_BYPASSED` is
@@ -336,11 +337,79 @@ two-level gate pattern.
    `!ns_netutil_is_ip_addr(sni.c_str(), nullptr)` is added explicitly in
    `runRequestHeader()` before setting the flag.
 
-4. DNS failure in the bypass path always results in connection teardown, regardless of
+5. DNS failure in the bypass path always results in connection teardown, regardless of
    `defer-dns-error` configuration.
 
-5. `ResolvedIpFromHttpHost = 8` is produced for the first time in this code path —
+6. `ResolvedIpFromHttpHost = 8` is produced for the first time in this code path —
    closing ENG-970460 Known Gap #1. No separate ticket required.
+
+---
+
+## Open Design Questions
+
+These questions were identified after the PR was floated (ENG-1036449, PR #15237) and
+sent to the product management team for confirmation.
+
+### Q1 — What is the intended behavior of "Bypass" in the face of domain fronting?
+
+**Working definition (confirmed by PM, 2026-06-15):**
+- **Block:** Domain fronting detected → connection terminated immediately. No traffic flows.
+- **Bypass:** Domain fronting detected → do not terminate, but enforce the destination the
+  HTTP Host header actually declares. Connect to the Host domain's own IP, not the
+  SNI-routed IP. Policy is evaluated against the true destination.
+
+PM's framing: "the goal is to never trust the original destination IP for the requested
+domain when we have it. For domain fronting exceptions, the main question is which domain
+the proxy should connect to: SNI or HTTP Host. Then use this to do DNS resolution."
+
+Answer: **HTTP Host domain**. The SNI-resolved IP is the CDN's IP, not the actual
+requested domain's IP. ENG-1036449 replaces it with the correct one.
+
+**Status:** Confirmed. ✓
+
+### Q2 — Should the tenant exception list apply in Bypass mode?
+
+**Answer (confirmed, 2026-06-15):** No.
+
+**Reasoning (pre-confirmation analysis):**
+
+An early draft of the implementation added a tenant exception list check in the Bypass
+path, interpreting it as: "for these specific domains, let CDN routing proceed even in
+Bypass mode." Two concerns were identified with this approach:
+
+1. **Semantic mismatch.** The exception list was designed for Block mode: "block domain
+   fronting globally, except for these trusted domains." In Bypass mode, re-using the
+   exception list would extend its semantics to "don't enforce correct destination for
+   these domains." A tenant who added a domain to the exception list may have done so
+   only to avoid *blocking* — they may not have intended to also waive destination
+   enforcement in Bypass mode.
+
+2. **Dead configuration / unreachability.** A tenant in Bypass mode is unlikely to also
+   have domains on the exception list. The exception list is only meaningful in Block
+   mode. In Bypass mode it is effectively dead configuration — the check would never be
+   triggered in practice.
+
+The cleaner framing that resolves both concerns: if Bypass means "enforce the HTTP Host
+header destination," then there is *nothing to except* — every domain in Bypass mode
+gets destination enforcement applied, unconditionally. The exception list belongs
+exclusively to Block mode. Under this framing, the question of whether the exception
+list check is reachable in Bypass mode becomes moot: it is not consulted at all.
+
+**Implementation consequence:** The tenant exception list check was removed from the
+Bypass path in `runRequestHeader()`. `HTTP_DOMAIN_FRONTING_BYPASSED` is set
+unconditionally for all Bypass-mode domain fronting detections (subject to IP-in-SNI
+guard and two-level feature flag). Design Contract 3 (exception list respected in Bypass
+mode) is removed.
+
+**Status:** Confirmed. ✓ Code change applied in PR #15237.
+
+### Process note
+
+These questions should have been raised and answered during the brainstorming/research
+phase, before any design was written. The design was built on an assumed interpretation
+of "Bypass" that was inferred from code behavior rather than confirmed with PM. This is
+a process gap — see ADR `2026-04-14-nplan6618-architectural-decisions.md` for the lesson
+recorded.
 
 ---
 
@@ -368,8 +437,8 @@ two-level gate pattern.
 |---|---|---|
 | `DomainFrontingBypass_CorrectIpUsed` | SNI=allowed.com, Host=blocked.com, Bypass policy, DNS succeeds | `m_destHost.ip = blocked.com_ip`, `ipSource = ResolvedIpFromHttpHost = 8` |
 | `DomainFrontingBypass_DnsFailure_Teardown` | DNS fails for blocked.com | Teardown, `HTTP_DOMAIN_FRONTING_BYPASSED` cleared |
-| `DomainFrontingBypass_TenantException_NotTriggered` | Host in tenant exception list | Flag not set, old behavior |
-| `DomainFrontingBypass_StagedConfigOff_OldBehavior` | Global staged config disabled | SNI IP used (old behavior) |
+| ~~`DomainFrontingBypass_TenantException_NotTriggered`~~ | ~~Host in tenant exception list~~ | Removed — exception list not consulted in Bypass mode (PM confirmed 2026-06-15) |
+| `DomainFrontingBypass_GlobalFlagOff_OldBehavior` | Global staged config disabled | SNI IP used (old behavior) |
 | `DomainFrontingBypass_TenantFlagOff_OldBehavior` | Per-tenant flag disabled | SNI IP used (old behavior) |
 | `DomainFrontingBypass_GlobalException_NotTriggered` | SNI in global exception list | `detectDomainFronting()` returns false, flag not set |
 | `DomainFrontingBypass_IpInSni_NotTriggered` | SNI=1.2.3.4, Host=example.com, Bypass policy | Flag not set — legitimate IP-direct connection |
