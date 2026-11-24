@@ -140,6 +140,70 @@ Flag as **Critical** if a secondary consumer produces incorrect results that
 affect policy, security, or auditing. Flag as **Minor** if the gap affects
 logging or non-critical output only.
 
+### Guard relocation / consolidation delta
+When a diff moves a guard — a skip, a strip, a gate, a validation, a flag check —
+from a condition-scoped site to a broader or "single definitional" site (e.g.
+moving a security strip out of one module's flow into a shared serializer that
+every engine calls), verify **both directions** of the property:
+
+- **(a) Escape direction:** does every path that should be covered pass through
+  the new site? This is the direction authors and reviewers naturally check,
+  because it is the bug being fixed.
+- **(b) Precondition direction:** does every path that reaches the new site
+  satisfy the precondition the old site's guard encoded? A guard moved outward
+  loses the implicit context of its old enclosing flow. If the old guard ran
+  "after consumer X parsed the data," the new site must still guarantee X ran
+  first.
+
+Enumerate the **implementations/configurations** that can reach the new site —
+not just the call sites of the old one. Call-site enumeration is insufficient
+when the new site is shared: one call site can be reached by many engine
+classes, listeners, or build configurations.
+
+Cheap recipe:
+1. List every production caller of the old enclosing function.
+2. List every subclass / implementation / listener config that can drive the
+   new site (e.g. `grep -rn "public I.*ModuleEngine"`, `grep -rn "new .*Engine("`).
+3. Subtract: the delta set is what the relocation newly covers.
+4. For each delta path, name the precondition and prove it holds, or flag it.
+
+Flag as **Critical** when any delta path reaches the new site without the old
+flow's precondition — e.g. a credential strip now fires in an engine that never
+ran the module chain which consumes the stripped header.
+
+Precedent: PR #17449 moved the `Proxy-Authorization` strip from the tenant
+module chain into the shared egress serializer. Direction (a) held everywhere,
+so the leak looked closed; direction (b) failed on the EP→worker relay hop,
+where the serializer runs but the DAPII consumer never does, so identity
+parsing silently broke. No test exercised the second engine.
+
+### Security-header lifecycle across hops and engines
+When a PR adds, relocates, or removes the write/read/strip of a security-
+sensitive header (credentials, identity, auth, or trust-minted headers such as
+`Authorization`, `Proxy-Authorization`, `X-NS-*`), build a hop matrix before
+approving:
+
+| Hop | Who writes | Who reads (consumer) | Who strips | When |
+|-----|-----------|----------------------|------------|------|
+| client → entry listener | | | | |
+| internal relay (e.g. EP → worker) | | | | |
+| worker → origin | | | | |
+
+Rules:
+- A strip is correct only on hops **downstream of every consumer**. If the
+  consumer lives on a later hop (a different process, listener, or engine),
+  stripping earlier is a delivery bug even when it closes a leak.
+- "Egress" is not one thing. In a multi-process proxy, every relay hop is an
+  egress. Name the hop the policy applies to.
+- If one serialization function serves multiple engine implementations, confirm
+  each implementation's hop has the same read/write contract.
+
+If the changed code is shared by several engines/listeners, require at least one
+test that drives the relevant hop through its actual engine implementation. A
+test that only exercises the primary engine cannot distinguish "strip applied on
+the right hop" from "strip applied on every hop." Flag missing hop coverage as
+**Critical** for security-sensitive shared code.
+
 ### Single source of truth violation
 When a PR introduces a new field or structure that tracks data an existing field
 already tracks, flag the ambiguity about which is authoritative. Two objects
@@ -269,6 +333,9 @@ Determine which review skill to invoke for the given PR URL:
 Always use the Skill tool to invoke the appropriate skill rather than performing review steps manually.
 
 Operating principles (apply to both sub-skills):
+- **The General review checklist above applies in full even when delegating to a sub-skill.**
+  The sub-skills' shorter step lists do not replace it; a review that skips the checklist
+  (in particular the guard-relocation and security-header lifecycle gates) is incomplete.
 - Focus feedback on correctness, security, performance, and maintainability — in that priority order.
 - Be precise about what needs to change and why. Cite specific lines and provide concrete alternatives.
 - Distinguish blocking concerns from suggestions. Not everything needs to gate a merge.
@@ -290,6 +357,16 @@ Operating principles (apply to both sub-skills):
 ### Suggestions
 - file:line — [Optional improvements]
 
+## Consolidation / Hop Analysis
+(Include only when the diff relocates or consolidates a guard, or changes a
+security-sensitive header's write/read/strip.)
+
+- Guard relocated: [old site → new site]
+- Newly covered paths (implementations/configurations): [list]
+- Precondition per path: [path → precondition → holds / does not hold]
+- Hops and consumers: [hop → who reads → who strips]
+- Hop-coverage test: [which test exercises which engine/listener]
+
 ## Gap Coverage
 (Include only when background analysis was loaded or generated)
 
@@ -302,3 +379,9 @@ If the PR introduces new gaps or regressions relative to the pre-PR design, note
 ## Verdict
 APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
 ```
+
+**Approval gate.** If the diff relocates or consolidates a guard, or changes a
+security-sensitive header's write/read/strip, the `Consolidation / Hop Analysis`
+block is mandatory — do not output APPROVE without it. If any newly covered path
+cannot be shown to satisfy the old guard's precondition, the verdict is at most
+REQUEST CHANGES.
